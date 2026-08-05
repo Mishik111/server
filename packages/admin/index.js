@@ -61,6 +61,7 @@ const CMD_LABELS = [
     ['veh', 'Спавн авто'],
     ['gun', 'Выдать оружие'],
     ['kill', 'Убить'],
+    ['kick', 'Кикнуть (/kick)'],
     ['freeze', 'Заморозить'],
     ['invis', 'Невидимость'],
     ['respawn', 'Возрождение (R)'],
@@ -198,7 +199,8 @@ mp.events.addCommand('help', (player) => {
     player.outputChatBox('!{FFFF00}/unjail [id] !{FFFFFF}- досрочно освободить игрока');
     player.outputChatBox('!{FFFF00}/dunjail [id] !{FFFFFF}- гл. админ, в Деморгане: выпустить себя (без id) или игрока из тюрьмы');
     player.outputChatBox('!{FFFF00}/auncuff [id] !{FFFFFF}- гл. админ: снять наручники с игрока в любом месте');
-    player.outputChatBox('!{FFFF00}/traffic [0-100] !{FFFFFF}- гл. админ: NPC-трафик и пешеходы, плотность (0 - выключить; видно только админу)');
+    player.outputChatBox('!{FFFF00}/kick [id] [причина] !{FFFFFF}- кикнуть игрока с сервера');
+    player.outputChatBox('!{FFFF00}/traffic [0-100] !{FFFFFF}- гл. админ: NPC-трафик и пешеходы, плотность (0 - выключить; видят все игроки)');
     player.outputChatBox('!{FFFF00}/star [id] [звёзды 0-5] [причина] !{FFFFFF}- объявить в розыск (/star [id] 0 - снять)');
     player.outputChatBox('!{FFFF00}/orm [id] !{FFFFFF}- показать маркер преступника на карте (бессрочно, убрать — /unorm)');
     player.outputChatBox('!{FFFF00}/unorm !{FFFFFF}- убрать маркер преступника (/orm)');
@@ -444,6 +446,22 @@ mp.events.addCommand('kill', (player, _, argId) => {
     target.health = 0;
     target.outputChatBox(`!{FF4444}Вы убиты администратором!`);
     player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} убит!`);
+});
+
+// /kick [id] [причина] — кикнуть игрока по ID
+mp.events.addCommand('kick', (player, fullText, argId, ...reasonArgs) => {
+    if (!hasPerm(player, 'kick')) { noPermMsg(player); return; }
+    const target = getPlayerById(parseInt(argId, 10));
+    if (!target) {
+        player.outputChatBox('!{FF4444}Использование: /kick [id] [причина] — игрок с таким ID не найден');
+        return;
+    }
+    const reason = (reasonArgs || []).join(' ').trim() || 'Кик администратором';
+    mp.players.forEach((p) => {
+        if (p !== player) p.outputChatBox(`!{FF9900}/kick: администратор ${player.name} кикнул игрока ${target.citizenId}${reason ? ` (${reason})` : ''}`);
+    });
+    console.log(`[kick] ${player.name} кикнул ${target.name} (id ${target.citizenId})${reason ? `: ${reason}` : ''}`);
+    try { target.kick(reason); } catch (e) { /* ignore */ }
 });
 
 // /freeze [id] — заморозить/разморозить игрока по ID
@@ -1069,6 +1087,8 @@ mp.events.addCommand('ar', (player, _, argAmount, argId) => {
 // Спавним НА СЕРВЕРЕ (mp.peds/mp.vehicles) — такие сущности стримятся ВСЕМ игрокам,
 // а не только админу (клиентский mp.peds/mp.vehicles локальны). Движение педов/машин
 // навешивает сам клиент в entityStreamIn (TASK_WANDER_IN_AREA / TASK_VEHICLE_DRIVE_WANDER).
+// Пока плотность > 0, трафик живёт ВСЕГДА и следует за админом: сущности удаляются
+// только если сломались или админ уехал от них дальше 350 м.
 // /trafic — старый псевдоним.
 const TRAFFIC_CAR_MODELS = ['adder', 'buffalo', 'blista', 'felon', 'oracle', 'sultan', 'sentinel', 'surano', 'kuruma', 'comet2'];
 const TRAFFIC_PED_MODELS = ['a_m_y_hipster_01', 'a_m_m_skater_01', 'a_f_m_fat_old_01', 'a_m_y_stwhi_01', 'a_m_m_bevhills_02', 'a_f_y_business_02', 'a_m_y_beach_01'];
@@ -1079,6 +1099,16 @@ const trafficDestroy = (e) => { try { if (e && typeof e.destroy === 'function') 
 const trafficCleanupAll = () => {
     trafficSpawned.forEach(trafficDestroy);
     trafficSpawned.clear();
+};
+
+// Проверка «жива ли сущность» через пулы (mp.entities НЕ существует сервером —
+// любая проверка через него падала в catch и удаляла ВСЁ каждый тик).
+const isTrafficAlive = (e) => {
+    try {
+        if (e.type === 'ped') return mp.peds.toArray().indexOf(e) !== -1;
+        if (e.type === 'vehicle') return mp.vehicles.toArray().indexOf(e) !== -1;
+        return true;
+    } catch (err) { return false; }
 };
 
 const trafficSpawnPed = (pos, dim) => {
@@ -1097,13 +1127,24 @@ const trafficSpawnVehicle = (pos, dim) => {
     const a = Math.random() * Math.PI * 2;
     const r = 60 + Math.random() * 80;
     const p = new mp.Vector3(pos.x + Math.cos(a) * r, pos.y + Math.sin(a) * r, pos.z);
+    // Хэш передаём ЧИСЛОМ (mp.joaat), как везде в проекте (/veh): строковый
+    // model в mp.vehicles.new эта версия рантайма не принимает — молча падало.
+    let veh = null;
     try {
-        const veh = mp.vehicles.new(model, p, { heading: Math.random() * 360, dimension: dim, engine: true });
-        const ped = mp.peds.new(mp.joaat('a_m_y_hipster_01'), p, { heading: Math.random() * 360, dimension: dim });
-        try { ped.putIntoVehicle(veh, 0); } catch (e2) { /* ignore */ }
+        veh = mp.vehicles.new(mp.joaat(model), p, { heading: Math.random() * 360, dimension: dim });
+        try { veh.engine = true; } catch (e2) { /* ignore */ }
         trafficSpawned.add(veh);
+    } catch (e) { /* машину создать не удалось */ return; }
+    try {
+        const ped = mp.peds.new(mp.joaat('a_m_y_hipster_01'), p, { heading: Math.random() * 360, dimension: dim });
         trafficSpawned.add(ped);
-    } catch (e) { /* модель не загрузилась */ }
+        // Посадка в машину — не сразу после создания (API: нужен таймаут ~200 мс)
+        setTimeout(() => {
+            try {
+                if (isTrafficAlive(veh) && isTrafficAlive(ped)) ped.putIntoVehicle(veh, 0);
+            } catch (e2) { /* ignore */ }
+        }, 250);
+    } catch (e) { /* водителя создать не удалось — машина останется пустой */ }
 };
 
 const trafficTick = () => {
@@ -1112,24 +1153,32 @@ const trafficTick = () => {
     const owner = t.owner;
     const pos = owner.position;
     const dim = owner.dimension;
-    // Чистим сломанных и уехавших дальше 500 м от владельца
+    // Удаляем только сломанных (убитых/удалённых иначе) и тех, от кого владелец
+    // уехал дальше 350 м. Всё остальное ЖИВЁТ ПОСТОЯННО — трафик не «мигает».
     const toRemove = [];
     trafficSpawned.forEach((e) => {
         try {
-            if (!mp.entities.exists(e)) { toRemove.push(e); return; }
+            if (!isTrafficAlive(e)) { toRemove.push(e); return; }
             const ep = e.position;
-            if (!ep || Math.hypot(ep.x - pos.x, ep.y - pos.y) > 500) toRemove.push(e);
+            if (!ep || Math.hypot(ep.x - pos.x, ep.y - pos.y) > 350) toRemove.push(e);
         } catch (err) { toRemove.push(e); }
     });
     toRemove.forEach((e) => { trafficSpawned.delete(e); trafficDestroy(e); });
-    // Дополняем до нужного количества
+    // На большой скорости не создаём новые (позиции пойдут неверные + стрим-хаос)
+    let speed = 0;
+    try {
+        const v = owner.vehicle;
+        if (v && v.velocity) speed = Math.hypot(v.velocity.x, v.velocity.y, v.velocity.z);
+    } catch (e) { /* ignore */ }
+    if (speed > 40) return;
+    // Дополняем до нужного количества вокруг владельца: машин больше, пешеходов меньше
     let peds = 0;
     let vehs = 0;
     trafficSpawned.forEach((e) => { if (e.type === 'ped') peds++; else if (e.type === 'vehicle') vehs++; });
-    const needPeds = Math.round(12 * t.density / 100) - peds;
-    for (let i = 0; i < needPeds; i++) trafficSpawnPed(pos, dim);
-    const needVehs = Math.round(8 * t.density / 100) - vehs;
+    const needVehs = Math.round(14 * t.density / 100) - vehs;
     for (let i = 0; i < needVehs; i++) trafficSpawnVehicle(pos, dim);
+    const needPeds = Math.round(4 * t.density / 100) - peds;
+    for (let i = 0; i < needPeds; i++) trafficSpawnPed(pos, dim);
 };
 
 const setTraffic = (player, argDensity, def) => {

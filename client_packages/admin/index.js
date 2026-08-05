@@ -600,16 +600,26 @@ mp.events.add('entityStreamIn', (entity) => {
     if (trafficDensity <= 0) return;
     if (entity.type !== 'ped') return;
     if (TRAFFIC_PED_HASHES.indexOf(entity.model >>> 0) === -1) return;
+    const assignTask = () => {
+        try {
+            if (entity.vehicle && entity.vehicle.handle &&
+                TRAFFIC_CAR_HASHES.indexOf(entity.vehicle.model >>> 0) !== -1) {
+                // Водитель трафик-авто: езда по городу (TASK_VEHICLE_DRIVE_WANDER: пед, авто, скорость, стиль)
+                mp.game.invoke('0x480142959D337D00', entity.handle, entity.vehicle.handle, 25.0 + Math.random() * 10, 0);
+            } else {
+                // Обычный пешеход: блуждание в радиусе 50 м от точки (TASK_WANDER_IN_AREA)
+                const p = entity.position;
+                mp.game.invoke('0xE054346CA3A0F315', entity.handle, p.x, p.y, p.z, 50, 0, 0);
+            }
+        } catch (e) { /* ignore */ }
+    };
+    assignTask();
+    // Водителя сажают в машину на сервере с задержкой ~250 мс — пед может застримиться
+    // раньше, чем окажется в авто. Пере-назначаем задачу один раз чуть позже.
     try {
-        if (entity.vehicle && entity.vehicle.handle &&
-            TRAFFIC_CAR_HASHES.indexOf(entity.vehicle.model >>> 0) !== -1) {
-            // Водитель трафик-авто: езда по городу (TASK_VEHICLE_DRIVE_WANDER: пед, авто, скорость, стиль)
-            mp.game.invoke('0x480142959D337D00', entity.handle, entity.vehicle.handle, 25.0 + Math.random() * 10, 0);
-        } else {
-            // Обычный пешеход: блуждание в радиусе 50 м от точки (TASK_WANDER_IN_AREA)
-            const p = entity.position;
-            mp.game.invoke('0xE054346CA3A0F315', entity.handle, p.x, p.y, p.z, 50, 0, 0);
-        }
+        setTimeout(() => {
+            if (entity && entity.handle) assignTask();
+        }, 400);
     } catch (e) { /* ignore */ }
 });
 
@@ -854,11 +864,13 @@ mp.events.add('render', () => {
         const veh = player.vehicle;
         // Радио в ЛЮБОЙ машине выключено (SET_VEHICLE_RADIO_ENABLED = off)
         try { mp.game.invoke('0x3B988190C0AA6C0B', veh.handle, false); } catch (e) { /* ignore */ }
-        // Тестовая машина: супер-мощь (множители двигателя) + кап скорости 1000 км/ч
+        // Тестовая машина: супер-мощь (множители двигателя) + кап скорости ~430 км/ч.
+        // Кап выше (1000 км/ч = 277 м/с) ломал синхронизацию позиций — античит RAGE:MP
+        // кикал водителя «Corrupted packet flow(NoConnectionResetV2E)».
         if ((veh.model >>> 0) === TEST_MODEL_HASH) {
             try { mp.game.invoke('0x93A3996368C94158', veh.handle, 50.0); } catch (e) { /* _SET_VEHICLE_ENGINE_POWER_MULTIPLIER */ }
             try { mp.game.invoke('0xB59E4BD37AE292DB', veh.handle, 50.0); } catch (e) { /* _SET_VEHICLE_ENGINE_TORQUE_MULTIPLIER */ }
-            try { mp.game.invoke('0x0E46A3FCBDE2A1B1', veh.handle, 277.78); } catch (e) { /* SET_ENTITY_MAX_SPEED: 277.78 м/с = 1000 км/ч */ }
+            try { mp.game.invoke('0x0E46A3FCBDE2A1B1', veh.handle, 120.0); } catch (e) { /* SET_ENTITY_MAX_SPEED: 120 м/с = 432 км/ч */ }
         }
     }
 
