@@ -128,7 +128,7 @@ mp.events.addCommand('help', (player) => {
     player.outputChatBox('!{FFFF00}↑ (стрелка вверх) !{FFFFFF}- меню полномочий (для главного админа, id=1)');
 });
 
-// /veh [имя] [номер] — заспавнить машину с произвольным номером
+// /veh [имя] [номер] — заспавнить машину с произвольным номером и посадить игрока за руль
 mp.events.addCommand('veh', (player, fullText, name, plate) => {
     if (!hasPerm(player, 'veh')) { noPermMsg(player); return; }
     if (!name) {
@@ -136,16 +136,42 @@ mp.events.addCommand('veh', (player, fullText, name, plate) => {
         return;
     }
 
+    name = String(name).trim();
+    const hash = mp.joaat(name);
+
+    // Переводим угол поворота игрока (heading) в радианы
+    const headingRad = (player.heading * Math.PI) / 180;
+    const distance = 3; // Расстояние спавна перед игроком (в метрах)
+
+    // Вычисляем точку перед игроком на сервере
+    const spawnPos = new mp.Vector3(
+        player.position.x - Math.sin(headingRad) * distance,
+        player.position.y + Math.cos(headingRad) * distance,
+        player.position.z
+    );
+
     const plateText = plate ? plate.toUpperCase() : 'ADMIN';
-    const pos = player.position;
 
-    const veh = mp.vehicles.new(mp.joaat(name), pos, {
-        numberPlate: plateText,
-        heading: player.heading
-    });
+    try {
+        const veh = mp.vehicles.new(hash, spawnPos, {
+            numberPlate: plateText,
+            heading: player.heading,
+            dimension: player.dimension
+        });
 
-    player.putIntoVehicle(veh, 0);
-    player.outputChatBox(`!{44FF44}Заспавнено: ${name} [Номер: ${plateText}]`);
+        if (veh) {
+            // Сажаем игрока на водительское сиденье (0)
+            player.putIntoVehicle(veh, 0);
+            player.outputChatBox(`!{44FF44}Заспавнено: ${name} [Номер: ${plateText}] — вы за рулём.`);
+            // Проверка: смонтирована ли модель на клиенте (важно для DLC-машин)
+            try { player.call('veh:verify', [name, hash]); } catch (e) { /* ignore */ }
+        } else {
+            player.outputChatBox(`!{FF4444}Не удалось создать машину: ${name}`);
+        }
+    } catch (e) {
+        player.outputChatBox(`!{FF4444}Ошибка создания машины: проверьте правильность имени ${name}`);
+        console.error(e);
+    }
 });
 
 // /gun [название] — надежная выдача оружия

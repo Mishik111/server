@@ -741,6 +741,23 @@ mp.events.add('render', () => {
     player.position = pos;
 });
 
+// ---------- Проверка DLC-модели после /veh ----------
+// Сервер просит клиента проверить, знает ли игра модель по хешу
+// (IS_MODEL_IN_CDIMAGE): если false — DLC не смонтирован/не скачан.
+mp.events.add('veh:verify', (name, hash) => {
+    let mounted = false;
+    try {
+        mounted = typeof mp.game.streaming.isModelInCdimage === 'function'
+            ? mp.game.streaming.isModelInCdimage(hash)
+            : false;
+    } catch (e) { /* ignore */ }
+    if (mounted) {
+        mp.gui.chat.push(`!{44FF44}Модель ${name} загружена на клиенте (DLC смонтирован).`);
+    } else {
+        mp.gui.chat.push(`!{FF4444}Модель ${name} НЕ загружена на клиенте — DLC не смонтирован/не скачан. Перезайди полностью после рестарта сервера.`);
+    }
+});
+
 // ---------- Розыск: применение звёзд на самом игроке (/star) ----------
 // setFakeWantedLevel рисует HUD-звёзды GTA; setWantedLevel — реальный уровень;
 // setPoliceIgnorePlayer(true) — чтобы не спавнились NPC-копы.
