@@ -764,22 +764,40 @@ mp.events.add('star:apply', (stars) => {
 });
 
 // ---------- Маркер преступника (/orm) ----------
-// Блин, привязанный к игроку; живёт 30 секунд; новый вызов заменяет старый.
+// Блин-метка на карте, 30 секунд; каждый тик обновляет позицию цели и свою
+// дименсию (чтобы метка была видна независимо от локации/тюрьмы).
 let ormBlip = null;
 let ormBlipTimer = null;
+let ormBlipTrack = null;
+let ormTargetRemoteId = null;
+
+function ormClear() {
+    if (ormBlipTrack) { clearInterval(ormBlipTrack); ormBlipTrack = null; }
+    if (ormBlipTimer) { clearTimeout(ormBlipTimer); ormBlipTimer = null; }
+    if (ormBlip) { try { ormBlip.destroy(); } catch (e) { /* ignore */ } ormBlip = null; }
+    ormTargetRemoteId = null;
+}
+
 mp.events.add('orm:showMarker', (remoteId, name, stars, reason) => {
+    ormClear();
+    const target = mp.players.atRemoteId(remoteId);
+    if (!target) return;
+    ormTargetRemoteId = remoteId;
     try {
-        if (ormBlip) { try { ormBlip.destroy(); } catch (e) { /* ignore */ } ormBlip = null; }
-        if (ormBlipTimer) { clearTimeout(ormBlipTimer); ormBlipTimer = null; }
-        const target = mp.players.atRemoteId(remoteId);
-        if (target) {
-            ormBlip = mp.blips.new(163, target, { color: 1 }); // 163 = criminal, красный
-            try { ormBlip.name = name; } catch (e) { /* ignore */ }
-            try { ormBlip.setLabel(`${name} (${stars} зв.)`); } catch (e) { /* ignore */ }
-        }
-        ormBlipTimer = setTimeout(() => {
-            if (ormBlip) { try { ormBlip.destroy(); } catch (e) { /* ignore */ } ormBlip = null; }
-            ormBlipTimer = null;
-        }, 30000);
+        ormBlip = mp.blips.new(163, target.position, { color: 1, name: `${name} (${stars} зв.)`, scale: 1.0 });
     } catch (e) { /* ignore */ }
+    ormBlipTrack = setInterval(() => {
+        try {
+            if (!ormBlip) { ormClear(); return; }
+            const t = mp.players.atRemoteId(ormTargetRemoteId);
+            if (!t || !t.position) { ormClear(); return; }
+            ormBlip.position = t.position;
+            ormBlip.dimension = mp.players.local.dimension;
+        } catch (e) { ormClear(); }
+    }, 1000);
+    ormBlipTimer = setTimeout(ormClear, 30000);
+});
+
+mp.events.add('playerQuit', (remoteId) => {
+    if (ormTargetRemoteId !== null && remoteId === ormTargetRemoteId) ormClear();
 });
