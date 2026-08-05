@@ -122,16 +122,19 @@ module.exports = function initCuff(deps) {
     });
 
     // Наведение на игрока + клавиша 6: надеть/снять наручники (без команды в чате)
-    mp.events.add('admin:aimCuff', (player, citizenId) => {
+    mp.events.add('admin:aimCuff', (player, citizenId, tx, ty, tz, ox, oy, oz) => {
         if (!hasPerm(player, 'cuff')) { noPermMsg(player); return; }
         const target = getPlayerById(parseInt(citizenId, 10));
         if (!target || target === player) return;
-        try {
-            if (target.dist(player) > 25) {
-                player.outputChatBox('!{FF4444}Цель слишком далеко (до 25 м).');
-                return;
-            }
-        } catch (e) { /* ignore */ }
+        if (tx != null && ox != null) {
+            try {
+                const dx = tx - ox, dy = ty - oy, dz = tz - oz;
+                if (Math.sqrt(dx * dx + dy * dy + dz * dz) > 30 && !(target.cuffLeader === player.id)) {
+                    player.outputChatBox('!{FF4444}Цель слишком далеко (до 30 м).');
+                    return;
+                }
+            } catch (e) { /* ignore */ }
+        }
         const state = !target.cuffed;
         setCuffedState(target, state);
         if (state) {
@@ -144,16 +147,19 @@ module.exports = function initCuff(deps) {
     });
 
     // Наведение на игрока + клавиша 7: взять под руку / отпустить
-    mp.events.add('admin:aimLead', (player, citizenId) => {
+    mp.events.add('admin:aimLead', (player, citizenId, tx, ty, tz, ox, oy, oz) => {
         if (!hasPerm(player, 'lead')) { noPermMsg(player); return; }
         const target = getPlayerById(parseInt(citizenId, 10));
         if (!target || target === player) return;
-        try {
-            if (target.dist(player) > 25) {
-                player.outputChatBox('!{FF4444}Цель слишком далеко (до 25 м).');
-                return;
-            }
-        } catch (e) { /* ignore */ }
+        if (tx != null && ox != null) {
+            try {
+                const dx = tx - ox, dy = ty - oy, dz = tz - oz;
+                if (Math.sqrt(dx * dx + dy * dy + dz * dz) > 30 && !(target.cuffLeader === player.id)) {
+                    player.outputChatBox('!{FF4444}Цель слишком далеко (до 30 м).');
+                    return;
+                }
+            } catch (e) { /* ignore */ }
+        }
         if (player.leadTarget === target.citizenId || target.cuffLeader === player.id) {
             stopLead(player, target);
             return;

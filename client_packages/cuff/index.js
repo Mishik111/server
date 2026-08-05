@@ -167,7 +167,11 @@ const callAimAction = (remoteEvent) => {
     }
     const cid = t.getVariable && t.getVariable('citizenId');
     if (cid == null) return;
-    mp.events.callRemote(remoteEvent, cid);
+    const tp = t.position;
+    const lp = me.position;
+    // Позиции (цели и наши) передаём серверу — у него они устаревшие
+    // при телепортах/магните/полёте, поэтому проверять надо по тому, что видим мы
+    mp.events.callRemote(remoteEvent, cid, tp.x, tp.y, tp.z, lp.x, lp.y, lp.z);
 };
 
 mp.keys.bind(0x36, true, () => callAimAction('admin:aimCuff')); // 6 — надеть/снять наручники
