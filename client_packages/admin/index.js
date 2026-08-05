@@ -239,8 +239,11 @@ const injectChatScroll = () => {
         if (typeof mp.gui === 'undefined' || typeof mp.gui.execute !== 'function') return;
         mp.gui.execute(
             "(function(){ if (window.__rcs) return; window.__rcs = true; " +
-            "var ul = document.getElementById('chat_messages'); if (!ul) return; " +
-            "var sc = ul; var wrap = document.getElementById('chat_messages_wrapper'); if (wrap) sc = wrap; " +
+            "var find = function(doc){ var ul = doc.getElementById('chat_messages'); if (ul) { var wrap = doc.getElementById('chat_messages_wrapper'); if (wrap) ul = wrap; } return ul; }; " +
+            "var ul = find(document); " +
+            "if (!ul) { try { var fr = document.querySelectorAll('iframe'); for (var i = 0; i < fr.length; i++) { ul = fr[i].contentDocument && find(fr[i].contentDocument); if (ul) break; } } catch (e) {} } " +
+            "if (!ul) return; " +
+            "var sc = ul; " +
             "sc.style.overflowY = 'auto'; sc.style.overflowX = 'hidden'; sc.style.scrollbarWidth = 'none'; " +
             "window.__chatScroll = function(d){ sc.scrollTop += d; }; " +
             "var input = document.getElementById('chat_input') || document.getElementById('chatInput'); " +
@@ -275,32 +278,64 @@ mp.keys.bind(0x22, true, () => { // PageDown
     } catch (e) { /* ignore */ }
 });
 
-// История чата: стрелка вверх/вниз во вводе листает прошлые команды/сообщения (как в cmd)
-const injectChatHistory = () => {
+// История чата: стрелки ↑/↓ подставляют прошлые сообщения/команды.
+// Перехват на уровне игры (mp.keys.bind), чтобы нативные стрелки не блокировали;
+// текст в поле ввода пишется через mp.gui.execute с поиском по корневому DOM и iframe.
+const chatHistory = [];
+let chatHistoryIndex = -1;
+
+const pushChatHistory = (text) => {
+    if (!text || !String(text).trim().length) return;
+    const t = String(text);
+    if (chatHistory[chatHistory.length - 1] !== t) {
+        chatHistory.push(t);
+        if (chatHistory.length > 50) chatHistory.shift();
+    }
+    chatHistoryIndex = -1;
+};
+
+// Ловим отправленные сообщения и команды (клиентские события)
+mp.events.add('playerChat', (text) => pushChatHistory(text));
+mp.events.add('playerCommand', (command) => pushChatHistory(command));
+
+// Запись текста в поле ввода дефолтного чата (корень + iframe + input-элементы)
+const setChatInputValue = (text) => {
     try {
         if (typeof mp.gui === 'undefined' || typeof mp.gui.execute !== 'function') return;
         mp.gui.execute(
-            "(function(){ if (window.__chh) return; window.__chh = true; " +
-            "var inp = document.getElementById('chat_input') || document.getElementById('chatInput') || " +
-            "(function(){ var els = document.querySelectorAll('#chat input, #chat textarea, input[type=text]'); return els.length ? els[els.length - 1] : null; })(); " +
-            "if (!inp) return; window.__hist = window.__hist || []; window.__hi = window.__hist.length; " +
-            "inp.addEventListener('keydown', function(e){ " +
-            "  var k = e.key || ''; " +
-            "  if (k === 'Enter' || e.keyCode === 13) { " +
-            "    var v = this.value; if (v && v.length && window.__hist[window.__hist.length - 1] !== v) { window.__hist.push(v); if (window.__hist.length > 50) window.__hist.shift(); } " +
-            "    window.__hi = window.__hist.length; " +
-            "  } else if (k === 'ArrowUp' || e.keyCode === 38) { " +
-            "    if (window.__hist.length) { window.__hi = Math.max(0, window.__hi - 1); this.value = window.__hist[window.__hi] || ''; } " +
-            "    e.preventDefault(); e.stopPropagation(); " +
-            "  } else if (k === 'ArrowDown' || e.keyCode === 40) { " +
-            "    if (window.__hist.length) { window.__hi = Math.min(window.__hist.length, window.__hi + 1); this.value = window.__hist[window.__hi] || ''; } " +
-            "    e.preventDefault(); e.stopPropagation(); } " +
-            "}); })();"
+            "(function(){ " +
+            "var find = function(doc){ " +
+            "  var el = doc.getElementById('chat_input') || doc.getElementById('chatInput'); " +
+            "  if (!el) { var els = doc.querySelectorAll('#chat input, #chat textarea, input[type=text], textarea'); el = els.length ? els[els.length - 1] : null; } " +
+            "  return el; }; " +
+            "var el = find(document); " +
+            "if (!el) { try { var fr = document.querySelectorAll('iframe'); for (var i = 0; i < fr.length; i++) { el = fr[i].contentDocument && find(fr[i].contentDocument); if (el) break; } } catch (e) {} } " +
+            "if (el) { el.value = " + JSON.stringify(text) + "; el.focus(); el.dispatchEvent(new Event('input', { bubbles: true })); } })();"
         );
     } catch (e) { /* ignore */ }
 };
-setTimeout(injectChatHistory, 3000);
-setInterval(injectChatHistory, 30000);
+
+mp.keys.bind(0x26, true, () => { // ArrowUp — к более старым командам
+    try {
+        if (!mp.gui.chat || !mp.gui.chat.active) return;
+        if (!chatHistory.length) return;
+        chatHistoryIndex = chatHistoryIndex === -1 ? chatHistory.length - 1 : Math.max(0, chatHistoryIndex - 1);
+        setChatInputValue(chatHistory[chatHistoryIndex]);
+    } catch (e) { /* ignore */ }
+});
+mp.keys.bind(0x28, true, () => { // ArrowDown — к более свежим
+    try {
+        if (!mp.gui.chat || !mp.gui.chat.active) return;
+        if (chatHistoryIndex === -1) return;
+        if (chatHistoryIndex < chatHistory.length - 1) {
+            chatHistoryIndex++;
+            setChatInputValue(chatHistory[chatHistoryIndex]);
+        } else {
+            chatHistoryIndex = -1;
+            setChatInputValue('');
+        }
+    } catch (e) { /* ignore */ }
+});
 
 // Быстрое возрождение на клавишу R (в тюрьме R разрешена)
 mp.keys.bind(0x52, true, () => { // 0x52 = R
