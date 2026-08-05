@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Создание персонажа</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="panel">
+        <h2>Создание персонажа</h2>
+
+        <div class="field">
+            <label>Имя (3-20 символов)</label>
+            <input id="inp-name" type="text" maxlength="20" autocomplete="off" placeholder="Ваше имя">
+        </div>
+
+        <div class="field">
+            <label>Пол</label>
+            <div class="gender-row">
+                <button id="btn-male" class="gender active" type="button">Мужчина</button>
+                <button id="btn-female" class="gender" type="button">Женщина</button>
+            </div>
+        </div>
+
+        <div id="sliders"></div>
+
+        <div id="err"></div>
+        <button id="btn-submit" class="submit" type="button">Создать персонажа</button>
+    </div>
+
+    <script src="cef.js"></script>
+</body>
+</html>

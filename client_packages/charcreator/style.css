@@ -1,0 +1,135 @@
+html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+    color: #e8e8e8;
+    overflow: hidden;
+}
+
+#panel {
+    position: absolute;
+    top: 8%;
+    left: 20px;
+    width: 380px;
+    max-height: 84%;
+    padding: 18px 20px;
+    background: rgba(12, 14, 20, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+    overflow-y: auto;
+}
+
+#panel h2 {
+    margin: 0 0 14px 0;
+    font-size: 20px;
+    color: #ffffff;
+    text-align: center;
+    letter-spacing: 1px;
+}
+
+.field {
+    margin-bottom: 14px;
+}
+
+.field label {
+    display: block;
+    font-size: 13px;
+    color: #9aa4b8;
+    margin-bottom: 6px;
+}
+
+#inp-name {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9px 10px;
+    font-size: 14px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: #1b2130;
+    color: #ffffff;
+    outline: none;
+}
+
+#inp-name:focus {
+    border-color: #4f8cff;
+}
+
+.gender-row {
+    display: flex;
+    gap: 8px;
+}
+
+.gender {
+    flex: 1;
+    padding: 8px 0;
+    font-size: 14px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: #1b2130;
+    color: #c8d0de;
+    cursor: pointer;
+}
+
+.gender.active {
+    background: #2e5bcc;
+    border-color: #4f8cff;
+    color: #ffffff;
+}
+
+.slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.slider-label {
+    width: 130px;
+    font-size: 13px;
+    color: #c8d0de;
+    flex-shrink: 0;
+}
+
+.slider-row input[type='range'] {
+    flex: 1;
+    min-width: 0;
+    accent-color: #4f8cff;
+}
+
+.slider-val {
+    width: 38px;
+    text-align: right;
+    font-size: 12px;
+    color: #9aa4b8;
+    flex-shrink: 0;
+}
+
+#err {
+    display: none;
+    margin: 10px 0;
+    padding: 8px 10px;
+    font-size: 13px;
+    color: #ff6b6b;
+    background: rgba(255, 60, 60, 0.12);
+    border: 1px solid rgba(255, 60, 60, 0.4);
+    border-radius: 4px;
+}
+
+.submit {
+    width: 100%;
+    padding: 12px 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #ffffff;
+    background: linear-gradient(180deg, #3d74e8, #2a54b8);
+    border: 1px solid #4f8cff;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-top: 6px;
+}
+
+.submit:hover {
+    background: linear-gradient(180deg, #4f84f5, #3560cf);
+}
