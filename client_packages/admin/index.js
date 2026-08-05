@@ -236,14 +236,14 @@ mp.events.add('perm:close', closePerm);
 // состоянии, и авто-следование вниз ТОЛЬКО если игрок не листает историю.
 const injectChatScroll = () => {
     try {
-        if (typeof mp.gui === 'undefined' || !mp.gui.chat || typeof mp.gui.chat.execute !== 'function') return;
-        mp.gui.chat.execute(
+        if (typeof mp.gui === 'undefined' || typeof mp.gui.execute !== 'function') return;
+        mp.gui.execute(
             "(function(){ if (window.__rcs) return; window.__rcs = true; " +
             "var ul = document.getElementById('chat_messages'); if (!ul) return; " +
             "var sc = ul; var wrap = document.getElementById('chat_messages_wrapper'); if (wrap) sc = wrap; " +
             "sc.style.overflowY = 'auto'; sc.style.overflowX = 'hidden'; sc.style.scrollbarWidth = 'none'; " +
             "window.__chatScroll = function(d){ sc.scrollTop += d; }; " +
-            "var input = document.getElementById('chat_input'); " +
+            "var input = document.getElementById('chat_input') || document.getElementById('chatInput'); " +
             "sc.addEventListener('wheel', function(e){ " +
             "  if (input && document.activeElement === input) { e.preventDefault(); e.stopPropagation(); sc.scrollTop += (e.deltaY > 0 ? 48 : -48); } " +
             "}, { passive: false }); " +
@@ -262,15 +262,15 @@ setInterval(injectChatScroll, 30000);
 // PageUp / PageDown листают историю чата даже при закрытом вводе
 mp.keys.bind(0x21, true, () => { // PageUp
     try {
-        if (mp.gui.chat && typeof mp.gui.chat.execute === 'function') {
-            mp.gui.chat.execute('if (window.__chatScroll) window.__chatScroll(-400);');
+        if (typeof mp.gui !== 'undefined' && typeof mp.gui.execute === 'function') {
+            mp.gui.execute('if (window.__chatScroll) window.__chatScroll(-400);');
         }
     } catch (e) { /* ignore */ }
 });
 mp.keys.bind(0x22, true, () => { // PageDown
     try {
-        if (mp.gui.chat && typeof mp.gui.chat.execute === 'function') {
-            mp.gui.chat.execute('if (window.__chatScroll) window.__chatScroll(400);');
+        if (typeof mp.gui !== 'undefined' && typeof mp.gui.execute === 'function') {
+            mp.gui.execute('if (window.__chatScroll) window.__chatScroll(400);');
         }
     } catch (e) { /* ignore */ }
 });
@@ -278,10 +278,11 @@ mp.keys.bind(0x22, true, () => { // PageDown
 // История чата: стрелка вверх/вниз во вводе листает прошлые команды/сообщения (как в cmd)
 const injectChatHistory = () => {
     try {
-        if (typeof mp.gui === 'undefined' || !mp.gui.chat || typeof mp.gui.chat.execute !== 'function') return;
-        mp.gui.chat.execute(
+        if (typeof mp.gui === 'undefined' || typeof mp.gui.execute !== 'function') return;
+        mp.gui.execute(
             "(function(){ if (window.__chh) return; window.__chh = true; " +
-            "var inp = document.getElementById('chat_input') || document.getElementById('chatInput'); " +
+            "var inp = document.getElementById('chat_input') || document.getElementById('chatInput') || " +
+            "(function(){ var els = document.querySelectorAll('#chat input, #chat textarea, input[type=text]'); return els.length ? els[els.length - 1] : null; })(); " +
             "if (!inp) return; window.__hist = window.__hist || []; window.__hi = window.__hist.length; " +
             "inp.addEventListener('keydown', function(e){ " +
             "  var k = e.key || ''; " +
