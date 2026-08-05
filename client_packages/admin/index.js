@@ -742,12 +742,23 @@ mp.events.add('render', () => {
 });
 
 // ---------- Розыск: применение звёзд на самом игроке (/star) ----------
+// setFakeWantedLevel рисует HUD-звёзды GTA; setWantedLevel — реальный уровень;
+// setPoliceIgnorePlayer(true) — чтобы не спавнились NPC-копы.
 mp.events.add('star:apply', (stars) => {
+    stars = Math.max(0, Math.min(5, parseInt(stars, 10) || 0));
+    try {
+        if (typeof mp.game.gameplay.setFakeWantedLevel === 'function') {
+            mp.game.gameplay.setFakeWantedLevel(stars);
+        }
+    } catch (e) { /* ignore */ }
     try {
         if (typeof mp.game.player.setWantedLevel === 'function') {
             mp.game.player.setWantedLevel(stars);
-        } else {
-            mp.game.invoke('0x39E5D16C67AF9E63', player.handle, stars, false); // SET_PLAYER_WANTED_LEVEL
+        }
+    } catch (e) { /* ignore */ }
+    try {
+        if (typeof mp.game.player.setPoliceIgnorePlayer === 'function') {
+            mp.game.player.setPoliceIgnorePlayer(true);
         }
     } catch (e) { /* ignore */ }
 });
