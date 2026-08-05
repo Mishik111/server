@@ -197,7 +197,17 @@ mp.events.add('render', () => {
 
     // Магнит: держим задержанного впереди офицера. Работает и без полёта;
     // если задержанный посажен в машину (/put) — из машины не вытаскиваем.
-    if (leadLeaderId != null && cuffed && !me.vehicle) {
+    // me.vehicle обновляется с задержкой (~100-300 мс) после посадки, поэтому
+    // дополнительно проверяем педа нативом isPedInAnyVehicle (обёртка, не invoke).
+    let inVeh = false;
+    try { inVeh = !!me.vehicle; } catch (e) { /* ignore */ }
+    if (!inVeh) {
+        try {
+            inVeh = typeof mp.game.ped.isPedInAnyVehicle === 'function'
+                && !!mp.game.ped.isPedInAnyVehicle(me.handle, false);
+        } catch (e) { /* ignore */ }
+    }
+    if (leadLeaderId != null && cuffed && !inVeh) {
         try {
             const leader = mp.players.atRemoteId(leadLeaderId);
             if (leader) {

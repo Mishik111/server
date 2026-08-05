@@ -215,38 +215,35 @@ module.exports = function initCuff(deps) {
             return;
         }
 
-        let seated = false;
+        // Только пассажирские места. Место водителя (0) исключено НАВСЕГДА:
+        // иначе задержанный садился на руль. Приоритет — задние места, затем
+        // переднее пассажирское. Сажаем одним вызовом putIntoVehicle (посадка
+        // асинхронная, синхронно подтвердить нельзя) — поэтому занятость мест
+        // проверяем заранее по getOccupant, а «Нет места» выводим, лишь когда
+        // свободных пассажирских мест нет вовсе.
+        let placed = false;
         outer:
         for (const veh of vehicles) {
             let maxSeats = 9;
             try { maxSeats = typeof veh.getMaxSeats === 'function' ? veh.getMaxSeats() : 9; } catch (e) { maxSeats = 9; }
-            if (!maxSeats || maxSeats < 1) maxSeats = 9;
-            // Сначала пассажирские места, водительское — в последнюю очередь
+            if (!maxSeats || maxSeats < 2) maxSeats = 9;
             const seats = [];
-            for (let s = 1; s < maxSeats; s++) seats.push(s);
-            seats.push(0);
+            for (let s = 2; s < maxSeats; s++) seats.push(s); // задние
+            seats.push(1); // переднее пассажирское — в конце
             for (const s of seats) {
                 try {
-                    // Свободно ли место — по getOccupant, надёжнее результата посадки
                     const occ = typeof veh.getOccupant === 'function' ? veh.getOccupant(s) : null;
-                    if (occ) continue;
+                    if (occ && occ !== target) continue; // занято другим
                     if (typeof target.putIntoVehicle === 'function') {
                         target.putIntoVehicle(veh, s);
                     }
-                    let ok = false;
-                    try { ok = target.vehicle === veh; } catch (e) { ok = false; }
-                    if (!ok) {
-                        try {
-                            const occ2 = typeof veh.getOccupant === 'function' ? veh.getOccupant(s) : null;
-                            ok = occ2 === target;
-                        } catch (e) { ok = false; }
-                    }
-                    if (ok) { seated = true; break outer; }
-                } catch (e) { /* место занято или невалидно — пробуем дальше */ }
+                    placed = true;
+                    break outer;
+                } catch (e) { /* место занято/битое — пробуем следующее */ }
             }
         }
 
-        if (!seated) {
+        if (!placed) {
             player.outputChatBox('!{FF4444}Нет свободного места в машине.');
             return;
         }
