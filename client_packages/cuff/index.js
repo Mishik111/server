@@ -31,6 +31,12 @@ mp.events.add('cuff:set', (state) => {
     notifyCuffState();
 });
 
+// Смерть задержанного: магнит ведения выключаем, НО наручники НЕ снимаем —
+// после респавна игрок остаётся в наручниках (контроль заблокирован, 6/7 недоступны)
+mp.events.add('playerDeath', () => {
+    leadLeaderId = null;
+});
+
 // Начать/прекратить ведение (сервер говорит, кто ведёт)
 mp.events.add('lead:start', (leaderId) => {
     leadLeaderId = leaderId;
@@ -157,6 +163,11 @@ const getAimedPlayer = () => {
 
 // Клавиши 6/7 по прицелу: 6 — наручники (надеть/снять), 7 — вести/отпустить
 const callAimAction = (remoteEvent) => {
+    // Задержанный, находящийся в машине или мёртвый не может надевать
+    // наручники и вести (дублируется на сервере — там это авторитетно)
+    if (cuffed) return;
+    try { if (!!me.vehicle) return; } catch (e) { /* ignore */ }
+    try { if (me.health <= 0) return; } catch (e) { /* ignore */ }
     try {
         if (mp.gui.chat.active === true) return; // печатаем в чате
     } catch (e) { /* ignore */ }
@@ -186,6 +197,15 @@ mp.events.add('render', () => {
             if (typeof me.setControl === 'function') me.setControl(false);
             if (typeof me.setConfigFlag === 'function') me.setConfigFlag(52, true);
             mp.game.invoke('0x9A77DFD295E29B09', me.handle, 52, true);
+            // setControl(false) блокирует не всё — дублируем выключением контролов
+            // игры: бег (21), прыжок (22), атака/кулак/выстрел (24, 25, 140-142, 257, 263, 264),
+            // выход из машины (75)
+            try {
+                const off = [21, 22, 24, 25, 47, 75, 140, 141, 142, 257, 263, 264];
+                for (let i = 0; i < off.length; i++) {
+                    mp.game.controls.disableControlAction(0, off[i], true);
+                }
+            } catch (e) { /* ignore */ }
             // В машине (/put) анимацию не играем — она «выбивает» из сиденья
             if (!me.vehicle && Date.now() - lastCuffAnimAt > 2000) {
                 lastCuffAnimAt = Date.now();

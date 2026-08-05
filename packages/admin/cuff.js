@@ -124,6 +124,10 @@ module.exports = function initCuff(deps) {
     // Наведение на игрока + клавиша 6: надеть/снять наручники (без команды в чате)
     mp.events.add('admin:aimCuff', (player, citizenId, tx, ty, tz, ox, oy, oz) => {
         if (!hasPerm(player, 'cuff')) { noPermMsg(player); return; }
+        if (player.cuffed) {
+            player.outputChatBox('!{FF4444}Вы в наручниках — надевать наручники нельзя!');
+            return;
+        }
         const target = getPlayerById(parseInt(citizenId, 10));
         if (!target || target === player) return;
         if (tx != null && ox != null) {
@@ -149,6 +153,10 @@ module.exports = function initCuff(deps) {
     // Наведение на игрока + клавиша 7: взять под руку / отпустить
     mp.events.add('admin:aimLead', (player, citizenId, tx, ty, tz, ox, oy, oz) => {
         if (!hasPerm(player, 'lead')) { noPermMsg(player); return; }
+        if (player.cuffed) {
+            player.outputChatBox('!{FF4444}Вы в наручниках — вести задержанного нельзя!');
+            return;
+        }
         const target = getPlayerById(parseInt(citizenId, 10));
         if (!target || target === player) return;
         if (tx != null && ox != null) {
@@ -262,6 +270,18 @@ module.exports = function initCuff(deps) {
             }
         });
     }, 2000);
+
+    // Смерть задержанного: ведение прекращаем (офицер больше не «привязан»),
+    // а наручники НЕ снимаются — после респавна игрок остаётся задержанным
+    mp.events.add('playerDeath', (player) => {
+        if (!player.cuffed) return;
+        const officer = player.cuffLeader != null
+            ? mp.players.toArray().find((p) => p && p.id === player.cuffLeader)
+            : null;
+        if (officer && officer.leadTarget === player.citizenId) officer.leadTarget = null;
+        player.cuffLeader = null;
+        try { player.call('lead:stop', []); } catch (e) { /* ignore */ }
+    });
 
     // Очистка при выходе игрока
     mp.events.add('playerQuit', (player) => {
