@@ -26,6 +26,9 @@ let specWasFrozen = false;
 let specYaw = 90;    // угол вокруг цели (градусы)
 let specPitch = 75;  // высота камеры (90 = строго сверху)
 let specDist = 6.0;  // дистанция до цели
+// Позиция цели с СЕРВЕРА (если цель далеко и не стримится клиенту)
+let specServerPos = null;
+let specCurPos = null;
 
 // Для невидимых игроков (перем. 'invis'): что мы уже применили на каждом стримленном педе
 const ghostSeen = new Map(); // remoteId -> скрыт ли ник/коллизия
@@ -40,6 +43,8 @@ const restoreSpecState = () => {
 
 mp.events.add('spec:start', (targetId) => {
     specTargetId = targetId;
+    specServerPos = null;
+    specCurPos = null;
     // RAGE:MP стримит мир вокруг локального игрока, а не вокруг скриптовой камеры.
     // Если зритель остаётся на месте — вокруг камеры «белый вакуум» (мигает белым).
     // Поэтому прячем и замораживаем локального игрока и везём его за целью.
@@ -63,8 +68,18 @@ mp.events.add('spec:start', (targetId) => {
     }
 });
 
+// Сервер присылает позицию цели каждые 0.5с — нужно для целей вне стрим-зоны
+mp.events.add('spec:tick', (x, y, z) => {
+    try {
+        specServerPos = new mp.Vector3(x, y, z);
+        if (!specCurPos) specCurPos = new mp.Vector3(x, y, z);
+    } catch (e) { /* ignore */ }
+});
+
 mp.events.add('spec:stop', () => {
     specTargetId = null;
+    specServerPos = null;
+    specCurPos = null;
     restoreSpecState();
     if (specCamera) {
         try { specCamera.destroy(); } catch (e) { /* ignore */ }
@@ -536,10 +551,21 @@ mp.events.add('render', () => {
     // Спектатор: камера следует за целью, можно крутить мышью и зумить колёсиком
     if (specTargetId != null && specCamera) {
         try {
-            const target = mp.players.atRemoteId(specTargetId);
-            if (target) {
-                const p = target.position;
-                // Тащим локального игрока за целью — чтобы мир стримился вокруг камеры.
+            // Позиция цели: стримнутый игрок — каждый кадр; иначе — серверный тик
+            // (0.5с) с плавной интерполяцией, чтобы камера не дёргалась.
+            let p = null;
+            const streamed = mp.players.atRemoteId(specTargetId);
+            if (streamed && streamed.position) {
+                p = streamed.position;
+            } else if (specServerPos) {
+                if (!specCurPos) specCurPos = new mp.Vector3(specServerPos.x, specServerPos.y, specServerPos.z);
+                specCurPos.x += (specServerPos.x - specCurPos.x) * 0.3;
+                specCurPos.y += (specServerPos.y - specCurPos.y) * 0.3;
+                specCurPos.z += (specServerPos.z - specCurPos.z) * 0.3;
+                p = specCurPos;
+            }
+            if (!p) return;
+            // Тащим локального игрока за целью — чтобы мир стримился вокруг камеры.
                 // Отдельный try: даже если мышь не работает — камера обязана ехать за целью.
                 try { player.position = new mp.Vector3(p.x, p.y, p.z); } catch (e) { /* ignore */ }
 
@@ -590,7 +616,6 @@ mp.events.add('render', () => {
                     // Фолбэк: камера над целью, смотрим вниз
                     try { specCamera.setCoord(p.x, p.y, p.z + 4.5); specCamera.setRot(-90, 0, 0); } catch (e2) { /* ignore */ }
                 }
-            }
         } catch (e) { /* камера спектатора не должна валить render */ }
     }
 
@@ -840,6 +865,24 @@ mp.events.add('star:apply', (stars) => {
             mp.game.player.setPoliceIgnorePlayer(true);
         }
     } catch (e) { /* ignore */ }
+});
+
+// ---------- /mtp: сервер запрашивает координаты метки на карте ----------
+mp.events.add('mtp:requestWaypoint', () => {
+    let pos = null;
+    try { pos = mp.game.ui.getWaypointBlipPosition(); } catch (e) { /* ignore */ }
+    if (!pos) {
+        mp.gui.chat.push('!{FF4444}Сначала поставьте метку на карте (M → правая кнопка мыши).');
+        return;
+    }
+    // Уточняем высоту земли (если нативная доступна и возвращает валидное значение)
+    try {
+        if (typeof mp.game.gameplay.getGroundZFor3dCoord === 'function') {
+            const gz = mp.game.gameplay.getGroundZFor3dCoord(pos.x, pos.y, pos.z, 0, false);
+            if (typeof gz === 'number' && Number.isFinite(gz) && gz !== 0) pos.z = gz;
+        }
+    } catch (e) { /* ignore */ }
+    mp.events.callRemote('mtp:teleport', pos.x, pos.y, pos.z);
 });
 
 // ---------- Маркер преступника (/orm) ----------

@@ -66,7 +66,8 @@ const CMD_LABELS = [
     ['star', 'Объявить в розыск (/star)'],
     ['orm', 'Маркер преступника (/orm)'],
     ['livery', 'Раскраска машины (/livery)'],
-    ['color', 'Цвет машины (/color)']
+    ['color', 'Цвет машины (/color)'],
+    ['mtp', 'Телепорт к метке (/mtp)']
 ];
 const hasPerm = (player, cmd) => {
     if (player.citizenId === HEAD_ADMIN_ID) return true;
@@ -114,6 +115,7 @@ mp.events.addCommand('help', (player) => {
     player.outputChatBox('!{FFFF00}/invis !{FFFFFF}- невидимость');
     player.outputChatBox('!{FFFF00}/copypos !{FFFFFF}- скопировать позицию (в positions.txt + чат)');
     player.outputChatBox('!{FFFF00}/spec [id] / /unspec !{FFFFFF}- наблюдать за игроком через камеру');
+    player.outputChatBox('!{FFFF00}/mtp !{FFFFFF}- телепорт к метке на карте (в машине — вместе с машиной)');
     player.outputChatBox('!{FFFF00}/skin [id] !{FFFFFF}- сменить скин (/skin reset - вернуть свой)');
     player.outputChatBox('!{FFFF00}/6 [id] !{FFFFFF}(/cuff) - надеть/снять наручники (команды запрещены, скорость 50%)');
     player.outputChatBox('!{FFFF00}/7 [id] !{FFFFFF}(/lead) - взять задержанного под руку, /7 - отпустить');
@@ -321,11 +323,23 @@ mp.events.addCommand('copypos', (player) => {
     }
 });
 
-// /spec [id] — закрепить камеру за игроком (наблюдение)
+// /spec [id] — закрепить камеру за игроком (наблюдение).
+// Позицию цели каждые 0.5с шлёт СЕРВЕР (spec:tick) — камера работает и для
+// целей вне стрим-зоны клиента.
+const specRequests = new Map(); // requester.citizenId -> { target, timer }
+
+const specStop = (player) => {
+    const rec = specRequests.get(player.citizenId);
+    if (!rec) return;
+    if (rec.timer) { clearInterval(rec.timer); rec.timer = null; }
+    specRequests.delete(player.citizenId);
+    try { player.call('spec:stop', []); } catch (e) { /* ignore */ }
+};
+
 mp.events.addCommand('spec', (player, _, argId) => {
     if (!hasPerm(player, 'spec')) { noPermMsg(player); return; }
     if (argId && argId.toLowerCase() === 'off') {
-        player.call('spec:stop', []);
+        specStop(player);
         player.outputChatBox('!{FF4444}Наблюдение выключено');
         return;
     }
@@ -334,6 +348,14 @@ mp.events.addCommand('spec', (player, _, argId) => {
         player.outputChatBox('!{FF4444}Использование: /spec [id] — игрок с таким ID не найден');
         return;
     }
+    specStop(player); // новый спектатор заменяет старый
+    const timer = setInterval(() => {
+        try {
+            if (!target || !target.position) { specStop(player); return; }
+            player.call('spec:tick', [target.position.x, target.position.y, target.position.z]);
+        } catch (e) { specStop(player); }
+    }, 500);
+    specRequests.set(player.citizenId, { target, timer });
     player.call('spec:start', [target.id]);
     player.outputChatBox(`!{44FF44}Наблюдаете за игроком #${target.citizenId} (${target.name})`);
 });
@@ -341,8 +363,35 @@ mp.events.addCommand('spec', (player, _, argId) => {
 // /unspec — отключить наблюдение
 mp.events.addCommand('unspec', (player) => {
     if (!hasPerm(player, 'spec')) { noPermMsg(player); return; }
-    player.call('spec:stop', []);
+    specStop(player);
     player.outputChatBox('!{FF4444}Наблюдение выключено');
+});
+
+// /mtp — телепорт к метке на карте (если в машине — вместе с машиной).
+// Координаты метки знает только клиент, поэтому сервер запрашивает их.
+mp.events.addCommand('mtp', (player) => {
+    if (!hasPerm(player, 'mtp') && !hasPerm(player, 'tp')) { noPermMsg(player); return; }
+    try { player.call('mtp:requestWaypoint', []); } catch (e) { /* ignore */ }
+});
+
+mp.events.add('mtp:teleport', (player, x, y, z) => {
+    if (!hasPerm(player, 'mtp') && !hasPerm(player, 'tp')) return;
+    const px = parseFloat(x), py = parseFloat(y), pz = parseFloat(z);
+    if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) return;
+    if (Math.abs(px) > 20000 || Math.abs(py) > 20000) return;
+    const pos = new mp.Vector3(px, py, pz);
+    try {
+        const veh = player.vehicle;
+        if (veh) {
+            veh.position = pos;
+            player.outputChatBox('!{44FF44}Телепорт к метке (вместе с машиной).');
+        } else {
+            player.position = pos;
+            player.outputChatBox('!{44FF44}Телепорт к метке.');
+        }
+    } catch (e) {
+        player.outputChatBox('!{FF4444}Не удалось телепортироваться к метке');
+    }
 });
 
 // /fly и /spec автоматически включают невидимость на сервере (видно это всем игрокам).
@@ -838,9 +887,7 @@ setInterval(() => {
 // Очистка при выходе игрока
 mp.events.add('playerQuit', (player) => {
     jailMap.delete(player);
-});
-
-// /ajail [id] [минуты] [причина] — посадить игрока в тюрьму
+});// /ajail [id] [минуты] [причина] — посадить игрока в тюрьму
 mp.events.addCommand('ajail', (player, fullText, argId, argMin, ...reasonArgs) => {
     if (!hasPerm(player, 'ajail')) { noPermMsg(player); return; }
     const target = getPlayerById(parseInt(argId, 10));
@@ -1007,8 +1054,11 @@ const ormStop = (player) => {
     try { player.call('orm:stop', []); } catch (e) { /* ignore */ }
 };
 
-// Если запросивший вышел — гасим его маркер
-mp.events.add('playerQuit', (player) => ormStop(player));
+// Если запросивший вышел — гасим его маркер и спектатора
+mp.events.add('playerQuit', (player) => {
+    ormStop(player);
+    specStop(player);
+});
 
 mp.events.addCommand('orm', (player, _, argId) => {
     if (!hasPerm(player, 'orm') && !hasPerm(player, 'star')) { noPermMsg(player); return; }
