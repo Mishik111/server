@@ -64,7 +64,9 @@ const CMD_LABELS = [
     ['ajail', 'Посадить в тюрьму'],
     ['unjail', 'Освободить'],
     ['star', 'Объявить в розыск (/star)'],
-    ['orm', 'Маркер преступника (/orm)']
+    ['orm', 'Маркер преступника (/orm)'],
+    ['livery', 'Раскраска машины (/livery)'],
+    ['color', 'Цвет машины (/color)']
 ];
 const hasPerm = (player, cmd) => {
     if (player.citizenId === HEAD_ADMIN_ID) return true;
@@ -124,6 +126,8 @@ mp.events.addCommand('help', (player) => {
     player.outputChatBox('!{FFFF00}/unjail [id] !{FFFFFF}- досрочно освободить игрока');
     player.outputChatBox('!{FFFF00}/star [id] [звёзды 0-5] [причина] !{FFFFFF}- объявить в розыск (/star [id] 0 - снять)');
     player.outputChatBox('!{FFFF00}/orm [id] !{FFFFFF}- показать маркер преступника на карте (если у него есть звёзды)');
+    player.outputChatBox('!{FFFF00}/livery [номер] !{FFFFFF}- раскраска (ливрея) вашей машины; без номера — следующая');
+    player.outputChatBox('!{FFFF00}/color [R] [G] [B] !{FFFFFF}- покрасить машину в RGB-цвет (0-255)');
     player.outputChatBox('!{FFFF00}/reset !{FFFFFF}- изменить внешность и имя персонажа');
     player.outputChatBox('!{FFFF00}↑ (стрелка вверх) !{FFFFFF}- меню полномочий (для главного админа, id=1)');
 });
@@ -160,8 +164,11 @@ mp.events.addCommand('veh', (player, fullText, name, plate) => {
         });
 
         if (veh) {
-            // Сажаем игрока на водительское сиденье (0)
-            player.putIntoVehicle(veh, 0);
+            // Сажаем игрока на водительское сиденье (0) — по API нельзя сразу
+            // после создания, нужен таймаут ~200 мс
+            setTimeout(() => {
+                try { player.putIntoVehicle(veh, 0); } catch (e) { /* ignore */ }
+            }, 200);
             player.outputChatBox(`!{44FF44}Заспавнено: ${name} [Номер: ${plateText}] — вы за рулём.`);
             // Проверка: смонтирована ли модель на клиенте (важно для DLC-машин)
             try { player.call('veh:verify', [name, hash]); } catch (e) { /* ignore */ }
@@ -171,6 +178,68 @@ mp.events.addCommand('veh', (player, fullText, name, plate) => {
     } catch (e) {
         player.outputChatBox(`!{FF4444}Ошибка создания машины: проверьте правильность имени ${name}`);
         console.error(e);
+    }
+});
+
+// /livery [номер] — сменить раскраску (ливрею) своей машины; без номера — следующая
+mp.events.addCommand('livery', (player, _, argNum) => {
+    if (!hasPerm(player, 'livery') && !hasPerm(player, 'veh')) { noPermMsg(player); return; }
+    const veh = player.vehicle;
+    if (!veh) {
+        player.outputChatBox('!{FF4444}Вы не в машине.');
+        return;
+    }
+    if (player.seat !== 0) {
+        player.outputChatBox('!{FF4444}Сядьте на место водителя.');
+        return;
+    }
+    let livery;
+    if (argNum !== undefined && argNum !== null && String(argNum).trim() !== '') {
+        livery = parseInt(argNum, 10);
+        if (!Number.isInteger(livery) || livery < 0) {
+            player.outputChatBox('!{FF4444}Использование: /livery [номер] (или /livery без номера — следующая раскраска)');
+            return;
+        }
+    } else {
+        try {
+            const current = typeof veh.getMod === 'function' ? veh.getMod(48) : -1; // 48 = Livery
+            livery = (current === -1 ? -1 : current) + 1;
+            if (livery > 30) livery = 0;
+        } catch (e) {
+            livery = 0;
+        }
+    }
+    try {
+        veh.livery = livery;
+        player.outputChatBox(`!{44FF44}Раскраска установлена: ${livery}${livery === -1 ? ' (стандарт)' : ''}`);
+    } catch (e) {
+        player.outputChatBox(`!{FF4444}Не удалось установить раскраску ${livery}`);
+    }
+});
+
+// /color [R] [G] [B] — покрасить свою машину (основной и вторичный цвет)
+mp.events.addCommand('color', (player, _, r, g, b) => {
+    if (!hasPerm(player, 'color') && !hasPerm(player, 'veh')) { noPermMsg(player); return; }
+    const veh = player.vehicle;
+    if (!veh) {
+        player.outputChatBox('!{FF4444}Вы не в машине.');
+        return;
+    }
+    if (player.seat !== 0) {
+        player.outputChatBox('!{FF4444}Сядьте на место водителя.');
+        return;
+    }
+    const rr = parseInt(r, 10), gg = parseInt(g, 10), bb = parseInt(b, 10);
+    if (!Number.isInteger(rr) || !Number.isInteger(gg) || !Number.isInteger(bb) ||
+        rr < 0 || rr > 255 || gg < 0 || gg > 255 || bb < 0 || bb > 255) {
+        player.outputChatBox('!{FF4444}Использование: /color [R] [G] [B] — числа от 0 до 255. Пример: /color 255 0 0');
+        return;
+    }
+    try {
+        veh.setColorRGB(rr, gg, bb, rr, gg, bb);
+        player.outputChatBox(`!{44FF44}Цвет машины: RGB(${rr}, ${gg}, ${bb})`);
+    } catch (e) {
+        player.outputChatBox('!{FF4444}Не удалось покрасить машину');
     }
 });
 
