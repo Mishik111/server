@@ -129,7 +129,7 @@ mp.events.addCommand('help', (player) => {
     player.outputChatBox('!{FFFF00}/livery [номер] !{FFFFFF}- раскраска (ливрея) вашей машины; без номера — следующая');
     player.outputChatBox('!{FFFF00}/color [R] [G] [B] !{FFFFFF}- покрасить машину в RGB-цвет (0-255)');
     player.outputChatBox('!{FFFF00}/reset !{FFFFFF}- изменить внешность и имя персонажа');
-    player.outputChatBox('!{FFFF00}↑ (стрелка вверх) !{FFFFFF}- меню полномочий (для главного админа, id=1)');
+    player.outputChatBox('!{FFFF00}/perm !{FFFFFF}- меню полномочий (для главного админа, id=1)');
 });
 
 // /veh [имя] [номер] — заспавнить машину с произвольным номером и посадить игрока за руль
@@ -884,6 +884,12 @@ mp.events.addCommand('unjail', (player, _, argId) => {
 });
 
 // ---------- Меню полномочий (главный админ) ----------
+// /perm — открыть меню полномочий (только для главного админа, id=1)
+mp.events.addCommand('perm', (player) => {
+    if (player.citizenId !== HEAD_ADMIN_ID) { noPermMsg(player); return; }
+    mp.events.call('perm:requestPlayers', player);
+});
+
 // Гл. админ жать стрелку вверх — запрос списка игроков/команд
 mp.events.add('perm:requestPlayers', (player) => {
     if (player.citizenId !== HEAD_ADMIN_ID) return;

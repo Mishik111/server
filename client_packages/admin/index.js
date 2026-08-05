@@ -412,11 +412,8 @@ mp.keys.bind(0x74, true, () => { // 0x74 = F5
     mp.events.call('admin:toggleNoclip');
 });
 
-// Стрелка вверх — меню полномочий (только для главного админа, сервер проверит)
-mp.keys.bind(0x26, true, () => { // 0x26 = Up
-    if (chatOpen || jailActive || permBrowser) return;
-    mp.events.callRemote('perm:requestPlayers');
-});
+// Стрелка вверх больше НЕ занята меню полномочий — она свободна для истории чата.
+// Меню полномочий открывается командой /perm (только для главного админа, сервер проверит).
 
 // Переключение Noclip
 mp.events.add('admin:toggleNoclip', () => {
