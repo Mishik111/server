@@ -995,7 +995,21 @@ mp.events.addCommand('star', (player, _, argId, argStars, ...reasonArgs) => {
     }
 });
 
-// /orm [id] — показать на карте маркер преступника, если у игрока есть звёзды
+// /orm [id] — показать на карте маркер преступника, если у игрока есть звёзды.
+// Позицию цели каждую секунду шлёт СЕРВЕР (клиент не зависит от стрима/дальности).
+const ormRequests = new Map(); // requester.citizenId -> { target, startedAt, timer }
+
+const ormStop = (player) => {
+    const rec = ormRequests.get(player.citizenId);
+    if (!rec) return;
+    if (rec.timer) { clearInterval(rec.timer); rec.timer = null; }
+    ormRequests.delete(player.citizenId);
+    try { player.call('orm:stop', []); } catch (e) { /* ignore */ }
+};
+
+// Если запросивший вышел — гасим его маркер
+mp.events.add('playerQuit', (player) => ormStop(player));
+
 mp.events.addCommand('orm', (player, _, argId) => {
     if (!hasPerm(player, 'orm') && !hasPerm(player, 'star')) { noPermMsg(player); return; }
     const target = getPlayerById(parseInt(argId, 10));
@@ -1007,9 +1021,23 @@ mp.events.addCommand('orm', (player, _, argId) => {
         player.outputChatBox('!{FF4444}У игрока нет звёзд — розыск не объявлен.');
         return;
     }
+    ormStop(player); // новый запрос заменяет старый
+    const startedAt = Date.now();
+    const sendTick = () => {
+        try {
+            if (!target || !target.position) { ormStop(player); return; }
+            player.call('orm:tick', [target.position.x, target.position.y, target.position.z]);
+        } catch (e) { ormStop(player); }
+    };
+    const timer = setInterval(() => {
+        if (Date.now() - startedAt >= 30000) { ormStop(player); return; }
+        sendTick();
+    }, 1000);
+    ormRequests.set(player.citizenId, { target, startedAt, timer });
     try {
-        player.call('orm:showMarker', [target.id, target.name, target.wantedStars, target.wantedReason || '']);
+        player.call('orm:showMarker', [target.name, target.wantedStars, target.wantedReason || '']);
     } catch (e) { /* ignore */ }
+    sendTick();
     player.outputChatBox(`!{44FF44}Маркер преступника ${target.citizenId} показан на карте (30 сек).`);
 });
 

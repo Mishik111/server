@@ -843,40 +843,34 @@ mp.events.add('star:apply', (stars) => {
 });
 
 // ---------- Маркер преступника (/orm) ----------
-// Блин-метка на карте, 30 секунд; каждый тик обновляет позицию цели и свою
-// дименсию (чтобы метка была видна независимо от локации/тюрьмы).
+// Блин на карте; координаты каждую секунду присылает сервер (не зависит от
+// стрима/дальности цели). Живёт ~35 сек, новый /orm заменяет старый.
 let ormBlip = null;
 let ormBlipTimer = null;
-let ormBlipTrack = null;
-let ormTargetRemoteId = null;
 
 function ormClear() {
-    if (ormBlipTrack) { clearInterval(ormBlipTrack); ormBlipTrack = null; }
     if (ormBlipTimer) { clearTimeout(ormBlipTimer); ormBlipTimer = null; }
     if (ormBlip) { try { ormBlip.destroy(); } catch (e) { /* ignore */ } ormBlip = null; }
-    ormTargetRemoteId = null;
 }
 
-mp.events.add('orm:showMarker', (remoteId, name, stars, reason) => {
+mp.events.add('orm:showMarker', (name, stars, reason) => {
     ormClear();
-    const target = mp.players.atRemoteId(remoteId);
-    if (!target) return;
-    ormTargetRemoteId = remoteId;
     try {
-        ormBlip = mp.blips.new(163, target.position, { color: 1, name: `${name} (${stars} зв.)`, scale: 1.0 });
+        ormBlip = mp.blips.new(163, mp.players.local.position, {
+            color: 1,
+            name: `${name} (${stars} зв.)`,
+            scale: 1.0
+        });
     } catch (e) { /* ignore */ }
-    ormBlipTrack = setInterval(() => {
-        try {
-            if (!ormBlip) { ormClear(); return; }
-            const t = mp.players.atRemoteId(ormTargetRemoteId);
-            if (!t || !t.position) { ormClear(); return; }
-            ormBlip.position = t.position;
-            ormBlip.dimension = mp.players.local.dimension;
-        } catch (e) { ormClear(); }
-    }, 1000);
-    ormBlipTimer = setTimeout(ormClear, 30000);
+    ormBlipTimer = setTimeout(ormClear, 35000);
 });
 
-mp.events.add('playerQuit', (remoteId) => {
-    if (ormTargetRemoteId !== null && remoteId === ormTargetRemoteId) ormClear();
+mp.events.add('orm:tick', (x, y, z) => {
+    try {
+        if (!ormBlip) return;
+        ormBlip.position = new mp.Vector3(x, y, z);
+        ormBlip.dimension = mp.players.local.dimension;
+    } catch (e) { /* ignore */ }
 });
+
+mp.events.add('orm:stop', ormClear);
