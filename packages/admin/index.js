@@ -115,7 +115,7 @@ mp.events.addCommand('help', (player) => {
     player.outputChatBox('!{FFFF00}/7 [id] !{FFFFFF}(/lead) - взять задержанного под руку, /7 - отпустить');
     player.outputChatBox('!{FFFF00}/uncuff [id] !{FFFFFF}- снять наручники (без id - с себя)');
     player.outputChatBox('!{FFFF00}/unlead !{FFFFFF}- отпустить задержанного');
-    player.outputChatBox('!{FFFF00}/put [id] !{FFFFFF}- посадить задержанного в машину (переднее сиденье)');
+    player.outputChatBox('!{FFFF00}/put [id] !{FFFFFF}- посадить задержанного в свою машину, а вне машины - в ближайшую');
     player.outputChatBox('!{FFFF00}/vfly !{FFFFFF}- полёт на машине (машина летает)');
     player.outputChatBox('!{FFFF00}Навёл прицел на игрока + 6/7 !{FFFFFF}- наручники / взять под руку (до 8 м)');
     player.outputChatBox('!{FFFF00}/ajail [id] [минуты] [причина] !{FFFFFF}- посадить игрока в федеральную тюрьму');

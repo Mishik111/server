@@ -39,43 +39,120 @@ mp.events.add('lead:stop', () => {
     leadLeaderId = null;
 });
 
-// Направление камеры (локальная копия, чтобы не зависеть от admin/index.js)
-const cuffCamDir = () => {
-    const rot = mp.game.cam.getGameplayCamRot(2);
-    const cz = rot.z * (Math.PI / 180);
-    const cx = rot.x * (Math.PI / 180);
-    const multX = Math.abs(Math.cos(cx));
-    return {
-        x: -Math.sin(cz) * multX,
-        y: Math.cos(cz) * multX,
-        z: Math.sin(cx)
-    };
+// 3D-расстояние своими руками (Math.hypot и p.dist есть не во всех версиях клиента)
+const dist3 = (a, b) => {
+    const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
 };
 
-// Игрок, на которого мы смотрим: пускаем луч из камеры и берём того, чья позиция
-// (голова) ближе всего к лучу (перпендикулярно до 1.5 м), в радиусе 25 м.
-// Экранная проекция вплотную врёт — луч работает и вплотную, и издалека.
-const getAimedPlayer = () => {
+// Проекция точки мира на экран (нормализованные 0..1) — тот же приём, что в ESP.
+const projectToScreen = (x, y, z) => {
     try {
-        const camPos = mp.game.cam.getGameplayCamCoord();
-        const dir = cuffCamDir();
-        let best = null;
-        let bestDist = 1.5;
-        mp.players.forEachInStreamRange((p) => {
-            if (p === me) return;
-            if (!p.position || p.dist(me.position) > 25) return;
-            const tp = new mp.Vector3(p.position.x, p.position.y, p.position.z + 0.7);
-            const to = new mp.Vector3(tp.x - camPos.x, tp.y - camPos.y, tp.z - camPos.z);
-            const t = to.x * dir.x + to.y * dir.y + to.z * dir.z;
-            if (t <= 0) return; // за спиной
-            const px = camPos.x + dir.x * t;
-            const py = camPos.y + dir.y * t;
-            const pz = camPos.z + dir.z * t;
-            const d = Math.hypot(tp.x - px, tp.y - py, tp.z - pz);
-            if (d < bestDist) { bestDist = d; best = p; }
-        });
-        return best;
+        const sc = mp.game.graphics.getScreenCoordFromWorldCoord(x, y, z);
+        if (!sc || sc.result === false || sc.result === undefined) return null;
+        if (sc.screenX > 1.5 || sc.screenX < -1.5 || sc.screenY > 1.5 || sc.screenY < -1.5) return null;
+        return { x: sc.screenX, y: sc.screenY };
     } catch (e) { return null; }
+};
+
+// Камера: пробуем обёртки mp.game.cam один раз. В этой сборке RAGE:MP они не работают
+// (нативы камеры выключены — mp.game.invoke на них ругается), поэтому используем
+// направление взгляда по heading персонажа, который поворачивается за камерой.
+let camChecked = false;
+let camWorks = false;
+const tryCam = () => {
+    if (camChecked) return camWorks;
+    camChecked = true;
+    try {
+        const p = mp.game.cam.getGameplayCamCoord();
+        const r = mp.game.cam.getGameplayCamRot(2);
+        camWorks = !!(p && p.x != null && r && r.x != null);
+    } catch (e) { camWorks = false; }
+    return camWorks;
+};
+
+// Игрок, на которого мы смотрим. Без mp.game.invoke (нативы камеры в этой сборке
+// отключены). Схема:
+// 1) луч из камеры, если она жива (точное прицеливание);
+// 2) иначе луч по heading (персонаж поворачивается за камерой) + скрин-проекция;
+// 3) кандидаты — те, кто в пределах 2.2 м от луча или вплотную (до 2 м);
+// 4) если никто не прошёл — ближайший игрок вплотную (до 1.5 м).
+const getAimedPlayer = () => {
+    const mePos = me.position;
+
+    let dir = null;
+    let origin = null;
+    if (tryCam()) {
+        try {
+            const p = mp.game.cam.getGameplayCamCoord();
+            const r = mp.game.cam.getGameplayCamRot(2);
+            const cz = r.z * (Math.PI / 180);
+            const cx = r.x * (Math.PI / 180);
+            const c = Math.cos(cx);
+            dir = { x: -Math.sin(cz) * c, y: Math.cos(cz) * c, z: Math.sin(cx) };
+            origin = p;
+        } catch (e) { dir = null; origin = null; }
+    }
+    if (!dir || !origin) {
+        const hd = me.getHeading() * (Math.PI / 180);
+        dir = { x: Math.sin(hd), y: Math.cos(hd), z: 0 };
+        origin = new mp.Vector3(mePos.x, mePos.y, mePos.z + 0.9);
+    }
+
+    let best = null;
+    let bestScore = 1e9;
+
+    mp.players.forEach((p) => {
+        if (p === me || !p.position) return;
+        try {
+            const dx = p.position.x - mePos.x;
+            const dy = p.position.y - mePos.y;
+            const distH = Math.sqrt(dx * dx + dy * dy);
+            const dz = (p.position.z + 0.7) - origin.z; // голова vs глаза
+            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist > 25) return;
+
+            const along = dx * dir.x + dy * dir.y + dz * dir.z;
+            if (along <= 0) return; // позади
+
+            const tx = origin.x + dir.x * along;
+            const ty = origin.y + dir.y * along;
+            const tz = origin.z + dir.z * along;
+            const perp = Math.sqrt(
+                (p.position.x - tx) * (p.position.x - tx) +
+                (p.position.y - ty) * (p.position.y - ty) +
+                ((p.position.z + 0.7) - tz) * ((p.position.z + 0.7) - tz)
+            );
+
+            // Вплотную (до 2 м) — кандидат при любом отклонении луча;
+            // иначе цель должна быть почти на линии взгляда
+            const pointBlank = distH <= 2;
+            if (!pointBlank && perp > 2.2) return;
+
+            // Скрин-проекция головы: 0 = центр экрана, помогаем выбору при двух целях
+            const sc = projectToScreen(p.position.x, p.position.y, p.position.z + 0.7);
+            let screenScore = 0.35;
+            if (sc) screenScore = Math.sqrt((sc.x - 0.5) * (sc.x - 0.5) + (sc.y - 0.5) * (sc.y - 0.5));
+
+            const score = perp * 3 + screenScore * 10 + distH * 0.1;
+            if (score < bestScore) { bestScore = score; best = p; }
+        } catch (e) { /* игрок мог отстримиться — пропускаем */ }
+    });
+
+    if (!best) {
+        // Последний шанс: ближайший игрок вплотную (до 1.5 м)
+        let nearest = null;
+        let nd = 1.5;
+        mp.players.forEach((p) => {
+            if (p === me || !p.position) return;
+            try {
+                const d = dist3(p.position, mePos);
+                if (d < nd) { nd = d; nearest = p; }
+            } catch (e) { /* ignore */ }
+        });
+        return nearest;
+    }
+    return best;
 };
 
 // Клавиши 6/7 по прицелу: 6 — наручники (надеть/снять), 7 — вести/отпустить
