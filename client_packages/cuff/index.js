@@ -186,7 +186,8 @@ mp.events.add('render', () => {
             if (typeof me.setControl === 'function') me.setControl(false);
             if (typeof me.setConfigFlag === 'function') me.setConfigFlag(52, true);
             mp.game.invoke('0x9A77DFD295E29B09', me.handle, 52, true);
-            if (Date.now() - lastCuffAnimAt > 2000) {
+            // В машине (/put) анимацию не играем — она «выбивает» из сиденья
+            if (!me.vehicle && Date.now() - lastCuffAnimAt > 2000) {
                 lastCuffAnimAt = Date.now();
                 // TASK_PLAY_ANIM: mp_arresting/idle — руки за спиной, loop
                 mp.game.invoke('0xEA47FE3719165B94', me.handle, 'mp_arresting', 'idle', 8.0, 8.0, -1, 1, 0, true, true, true);

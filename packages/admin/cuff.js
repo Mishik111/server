@@ -178,8 +178,10 @@ module.exports = function initCuff(deps) {
     };
 
     // /put [id] — посадить задержанного (в наручниках) в машину.
-    // Если офицер в машине — в неё, иначе в ближайшую свободную машину (до 15 м).
-    mp.events.addCommand('put', async (player, _, argId) => {
+    // Если офицер в машине — в неё, иначе в ближайшие машины (до 15 м).
+    // Ведение выключается ДО посадки, чтобы клиентский магнит не выдернул его обратно.
+    // Садим серверным putIntoVehicle (setIntoVehicle — клиентский метод, на сервере его нет).
+    mp.events.addCommand('put', (player, _, argId) => {
         if (!hasPerm(player, 'lead')) { noPermMsg(player); return; }
         const target = getPlayerById(parseInt(argId, 10));
         if (!target) {
@@ -189,6 +191,13 @@ module.exports = function initCuff(deps) {
         if (!target.cuffed) {
             player.outputChatBox('!{FF4444}Игрок должен быть в наручниках (6)!');
             return;
+        }
+
+        // Ведение отключаем сразу (магнит иначе мешает посадке)
+        if (target.cuffLeader === player.id) {
+            target.cuffLeader = null;
+            if (player.leadTarget === target.citizenId) player.leadTarget = null;
+            try { target.call('lead:stop', []); } catch (e) { /* ignore */ }
         }
 
         // Список машин: своя (если в ней) + до 4 ближайших
@@ -218,13 +227,19 @@ module.exports = function initCuff(deps) {
             seats.push(0);
             for (const s of seats) {
                 try {
-                    let ok = false;
-                    if (typeof target.setIntoVehicle === 'function') {
-                        const res = target.setIntoVehicle(veh, s); // Promise<boolean> в новых версиях
-                        ok = res && typeof res.then === 'function' ? await res : !!res;
+                    // Свободно ли место — по getOccupant, надёжнее результата посадки
+                    const occ = typeof veh.getOccupant === 'function' ? veh.getOccupant(s) : null;
+                    if (occ) continue;
+                    if (typeof target.putIntoVehicle === 'function') {
+                        target.putIntoVehicle(veh, s);
                     }
-                    if (!ok && typeof target.putInVehicle === 'function') {
-                        try { target.putInVehicle(veh, s); ok = target.vehicle === veh; } catch (e2) { ok = false; }
+                    let ok = false;
+                    try { ok = target.vehicle === veh; } catch (e) { ok = false; }
+                    if (!ok) {
+                        try {
+                            const occ2 = typeof veh.getOccupant === 'function' ? veh.getOccupant(s) : null;
+                            ok = occ2 === target;
+                        } catch (e) { ok = false; }
                     }
                     if (ok) { seated = true; break outer; }
                 } catch (e) { /* место занято или невалидно — пробуем дальше */ }
@@ -234,12 +249,6 @@ module.exports = function initCuff(deps) {
         if (!seated) {
             player.outputChatBox('!{FF4444}Нет свободного места в машине.');
             return;
-        }
-        // Он сел в машину — ведение прекращаем
-        if (target.cuffLeader === player.id) {
-            target.cuffLeader = null;
-            if (player.leadTarget === target.citizenId) player.leadTarget = null;
-            try { target.call('lead:stop', []); } catch (e) { /* ignore */ }
         }
         target.outputChatBox('!{FF4444}Вас посадили в машину.');
         player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} посажен в машину.`);
