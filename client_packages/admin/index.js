@@ -286,7 +286,8 @@ const injectChatHistory = () => {
             "inp.addEventListener('keydown', function(e){ " +
             "  var k = e.key || ''; " +
             "  if (k === 'Enter' || e.keyCode === 13) { " +
-            "    var v = this.value; if (v && v.length) { window.__hist.push(v); window.__hi = window.__hist.length; } " +
+            "    var v = this.value; if (v && v.length && window.__hist[window.__hist.length - 1] !== v) { window.__hist.push(v); if (window.__hist.length > 50) window.__hist.shift(); } " +
+            "    window.__hi = window.__hist.length; " +
             "  } else if (k === 'ArrowUp' || e.keyCode === 38) { " +
             "    if (window.__hist.length) { window.__hi = Math.max(0, window.__hi - 1); this.value = window.__hist[window.__hi] || ''; } " +
             "    e.preventDefault(); e.stopPropagation(); " +
