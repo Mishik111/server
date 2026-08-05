@@ -740,3 +740,35 @@ mp.events.add('render', () => {
 
     player.position = pos;
 });
+
+// ---------- Розыск: применение звёзд на самом игроке (/star) ----------
+mp.events.add('star:apply', (stars) => {
+    try {
+        if (typeof mp.game.player.setWantedLevel === 'function') {
+            mp.game.player.setWantedLevel(stars);
+        } else {
+            mp.game.invoke('0x39E5D16C67AF9E63', player.handle, stars, false); // SET_PLAYER_WANTED_LEVEL
+        }
+    } catch (e) { /* ignore */ }
+});
+
+// ---------- Маркер преступника (/orm) ----------
+// Блин, привязанный к игроку; живёт 30 секунд; новый вызов заменяет старый.
+let ormBlip = null;
+let ormBlipTimer = null;
+mp.events.add('orm:showMarker', (remoteId, name, stars, reason) => {
+    try {
+        if (ormBlip) { try { ormBlip.destroy(); } catch (e) { /* ignore */ } ormBlip = null; }
+        if (ormBlipTimer) { clearTimeout(ormBlipTimer); ormBlipTimer = null; }
+        const target = mp.players.atRemoteId(remoteId);
+        if (target) {
+            ormBlip = mp.blips.new(163, target, { color: 1 }); // 163 = criminal, красный
+            try { ormBlip.name = name; } catch (e) { /* ignore */ }
+            try { ormBlip.setLabel(`${name} (${stars} зв.)`); } catch (e) { /* ignore */ }
+        }
+        ormBlipTimer = setTimeout(() => {
+            if (ormBlip) { try { ormBlip.destroy(); } catch (e) { /* ignore */ } ormBlip = null; }
+            ormBlipTimer = null;
+        }, 30000);
+    } catch (e) { /* ignore */ }
+});

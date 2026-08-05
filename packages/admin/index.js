@@ -62,7 +62,9 @@ const CMD_LABELS = [
     ['god', 'Бессмертие'],
     ['noclip', 'Полёт (F5)'],
     ['ajail', 'Посадить в тюрьму'],
-    ['unjail', 'Освободить']
+    ['unjail', 'Освободить'],
+    ['star', 'Объявить в розыск (/star)'],
+    ['orm', 'Маркер преступника (/orm)']
 ];
 const hasPerm = (player, cmd) => {
     if (player.citizenId === HEAD_ADMIN_ID) return true;
@@ -120,6 +122,8 @@ mp.events.addCommand('help', (player) => {
     player.outputChatBox('!{FFFF00}Навёл прицел на игрока + 6/7 !{FFFFFF}- наручники / взять под руку (до 8 м)');
     player.outputChatBox('!{FFFF00}/ajail [id] [минуты] [причина] !{FFFFFF}- посадить игрока в федеральную тюрьму');
     player.outputChatBox('!{FFFF00}/unjail [id] !{FFFFFF}- досрочно освободить игрока');
+    player.outputChatBox('!{FFFF00}/star [id] [звёзды 0-5] [причина] !{FFFFFF}- объявить в розыск (/star [id] 0 - снять)');
+    player.outputChatBox('!{FFFF00}/orm [id] !{FFFFFF}- показать маркер преступника на карте (если у него есть звёзды)');
     player.outputChatBox('!{FFFF00}/reset !{FFFFFF}- изменить внешность и имя персонажа');
     player.outputChatBox('!{FFFF00}↑ (стрелка вверх) !{FFFFFF}- меню полномочий (для главного админа, id=1)');
 });
@@ -857,6 +861,55 @@ mp.events.add('playerChat', (player, text) => {
             try { other.outputChatBox(`!{B0B0B0}${fromName}: ${msg}`); } catch (e) { /* ignore */ }
         });
     } catch (e) { /* ignore */ }
+});
+
+// ---------- Розыск (звёзды) ----------
+// /star [id] [звёзды 0-5] [причина] — объявить игрока в розыск (0 — снять)
+mp.events.addCommand('star', (player, _, argId, argStars, ...reasonArgs) => {
+    if (!hasPerm(player, 'star')) { noPermMsg(player); return; }
+    const target = getPlayerById(parseInt(argId, 10));
+    if (!target) {
+        player.outputChatBox('!{FF4444}Использование: /star [id] [звёзды 0-5] [причина] — игрок с таким ID не найден');
+        return;
+    }
+    const stars = parseInt(argStars, 10);
+    if (!Number.isInteger(stars) || stars < 0 || stars > 5) {
+        player.outputChatBox('!{FF4444}Использование: /star [id] [звёзды 0-5] [причина] — звёзды от 0 до 5');
+        return;
+    }
+    const reason = (reasonArgs || []).join(' ');
+    target.wantedStars = stars;
+    target.wantedReason = stars > 0 ? reason : '';
+    try { target.setVariable('wantedStars', stars); } catch (e) { /* ignore */ }
+    try { target.call('star:apply', [stars]); } catch (e) { /* ignore */ }
+    if (stars > 0) {
+        const starWord = stars === 1 ? 'звезда' : (stars < 5 ? 'звезды' : 'звёзд');
+        target.outputChatBox(`!{FF4444}Вы объявлены в розыск (${stars} ${starWord})${reason ? `: ${reason}` : ''}!`);
+        player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} объявлен в розыск (${stars} зв.)${reason ? ` Причина: ${reason}` : ''}.`);
+        console.log(`[star] ${player.name} объявил ${target.name} (id ${target.citizenId}) в розыск: ${stars} зв.${reason ? ` (${reason})` : ''}`);
+    } else {
+        target.outputChatBox('!{44FF44}С вас снят розыск.');
+        player.outputChatBox(`!{44FF44}С игрока ${target.citizenId} снят розыск.`);
+        console.log(`[star] ${player.name} снял розыск с ${target.name} (id ${target.citizenId})`);
+    }
+});
+
+// /orm [id] — показать на карте маркер преступника, если у игрока есть звёзды
+mp.events.addCommand('orm', (player, _, argId) => {
+    if (!hasPerm(player, 'orm') && !hasPerm(player, 'star')) { noPermMsg(player); return; }
+    const target = getPlayerById(parseInt(argId, 10));
+    if (!target) {
+        player.outputChatBox('!{FF4444}Использование: /orm [id] — игрок с таким ID не найден');
+        return;
+    }
+    if (!target.wantedStars || target.wantedStars < 1) {
+        player.outputChatBox('!{FF4444}У игрока нет звёзд — розыск не объявлен.');
+        return;
+    }
+    try {
+        player.call('orm:showMarker', [target.id, target.name, target.wantedStars, target.wantedReason || '']);
+    } catch (e) { /* ignore */ }
+    player.outputChatBox(`!{44FF44}Маркер преступника ${target.citizenId} показан на карте (30 сек).`);
 });
 
 // ---------- Наручники / ведение / /put (отдельный модуль) ----------
