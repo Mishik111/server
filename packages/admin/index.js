@@ -368,14 +368,10 @@ mp.events.addCommand('unspec', (player) => {
 });
 
 // /mtp — телепорт к метке на карте (если в машине — вместе с машиной).
-// Координаты метки знает только клиент, поэтому сервер запрашивает их.
-mp.events.addCommand('mtp', (player) => {
-    if (!hasPerm(player, 'mtp') && !hasPerm(player, 'tp')) { noPermMsg(player); return; }
-    try { player.call('mtp:requestWaypoint', []); } catch (e) { /* ignore */ }
-});
-
+// Сама команда обрабатывается КЛИЕНТОМ (координаты метки знает только клиент);
+// сервер только выполняет телепорт после проверки прав.
 mp.events.add('mtp:teleport', (player, x, y, z) => {
-    if (!hasPerm(player, 'mtp') && !hasPerm(player, 'tp')) return;
+    if (!hasPerm(player, 'mtp') && !hasPerm(player, 'tp')) { noPermMsg(player); return; }
     const px = parseFloat(x), py = parseFloat(y), pz = parseFloat(z);
     if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) return;
     if (Math.abs(px) > 20000 || Math.abs(py) > 20000) return;

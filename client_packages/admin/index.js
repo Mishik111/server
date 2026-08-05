@@ -867,22 +867,36 @@ mp.events.add('star:apply', (stars) => {
     } catch (e) { /* ignore */ }
 });
 
-// ---------- /mtp: сервер запрашивает координаты метки на карте ----------
-mp.events.add('mtp:requestWaypoint', () => {
-    let pos = null;
-    try { pos = mp.game.ui.getWaypointBlipPosition(); } catch (e) { /* ignore */ }
-    if (!pos) {
-        mp.gui.chat.push('!{FF4444}Сначала поставьте метку на карте (M → правая кнопка мыши).');
-        return;
-    }
-    // Уточняем высоту земли (если нативная доступна и возвращает валидное значение)
+// ---------- /mtp: телепорт по метке на карте ----------
+// Координаты метки доступны только клиенту (waypoint blip type = 8).
+mp.events.add('playerCommand', (command) => {
+    let parts;
+    try { parts = String(command).trim().split(/\s+/); } catch (e) { return; }
+    if (!parts || !parts.length || parts[0] !== 'mtp') return;
     try {
-        if (typeof mp.game.gameplay.getGroundZFor3dCoord === 'function') {
-            const gz = mp.game.gameplay.getGroundZFor3dCoord(pos.x, pos.y, pos.z, 0, false);
-            if (typeof gz === 'number' && Number.isFinite(gz) && gz !== 0) pos.z = gz;
+        const wp = mp.game.ui.getFirstBlipInfoId(8); // 8 = waypoint
+        if (!mp.game.ui.doesBlipExist(wp)) {
+            mp.gui.chat.push('!{FF4444}Сначала поставьте метку на карте (M → правая кнопка мыши).');
+            return;
         }
-    } catch (e) { /* ignore */ }
-    mp.events.callRemote('mtp:teleport', pos.x, pos.y, pos.z);
+        const coords = mp.game.ui.getBlipInfoIdCoord(wp);
+        // Реальная высота земли, чтобы не телепортнуть под карту
+        let groundZ = 0;
+        try {
+            if (typeof mp.game.gameplay.getGroundZFor3dCoord === 'function') {
+                groundZ = mp.game.gameplay.getGroundZFor3dCoord(coords.x, coords.y, 1000.0, 0, false);
+            }
+        } catch (e) { /* ignore */ }
+        let z;
+        if (!groundZ || !Number.isFinite(groundZ)) {
+            z = (typeof coords.z === 'number' && Number.isFinite(coords.z)) ? coords.z : 50.0;
+        } else {
+            z = groundZ + 1.0; // чуть выше земли
+        }
+        mp.events.callRemote('mtp:teleport', coords.x, coords.y, z);
+    } catch (e) {
+        mp.gui.chat.push('!{FF4444}Не удалось получить координаты метки.');
+    }
 });
 
 // ---------- Маркер преступника (/orm) ----------
