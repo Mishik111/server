@@ -13,6 +13,8 @@ const CREATE_TABLE = 'CREATE TABLE characters (' +
     'name TEXT NOT NULL,' +
     'gender INTEGER NOT NULL DEFAULT 0,' +
     'appearance TEXT NOT NULL DEFAULT \'{}\',' +
+    'money INTEGER NOT NULL DEFAULT 5000,' +
+    'chips INTEGER NOT NULL DEFAULT 0,' +
     'created INTEGER NOT NULL,' +
     'lastLogin INTEGER' +
     ')';
@@ -20,6 +22,23 @@ const CREATE_TABLE = 'CREATE TABLE characters (' +
 const CREATE_PERMS_TABLE = 'CREATE TABLE IF NOT EXISTS admin_perms (' +
     'id INTEGER PRIMARY KEY,' +
     'cmds TEXT NOT NULL DEFAULT \'{}\',' +
+    'updated INTEGER NOT NULL' +
+    ')';
+
+// Тюремные записи (Demorgan + посадка задержанного): переживают рестарт сервера
+const CREATE_JAILS_TABLE = 'CREATE TABLE IF NOT EXISTS jails (' +
+    'citizenId INTEGER PRIMARY KEY,' +
+    'release INTEGER NOT NULL,' +
+    'reason TEXT NOT NULL DEFAULT \'\',' +
+    'comment TEXT NOT NULL DEFAULT \'\',' +
+    'updated INTEGER NOT NULL' +
+    ')';
+
+// Розыск: переживает рестарт сервера
+const CREATE_WANTED_TABLE = 'CREATE TABLE IF NOT EXISTS wanted (' +
+    'citizenId INTEGER PRIMARY KEY,' +
+    'stars INTEGER NOT NULL DEFAULT 0,' +
+    'reason TEXT NOT NULL DEFAULT \'\',' +
     'updated INTEGER NOT NULL' +
     ')';
 
@@ -65,6 +84,29 @@ initSqlJs({ wasmBinary: fs.readFileSync(WASM_FILE) })
 
         if (!fs.existsSync(DB_FILE)) persist();
         db.run(CREATE_PERMS_TABLE);
+        db.run(CREATE_JAILS_TABLE);
+        db.run(CREATE_WANTED_TABLE);
+        // Миграция: деньги и фишки (казино) в старой таблице characters
+        try {
+            const ccols = db.exec('PRAGMA table_info(characters)');
+            if (ccols[0] && !ccols[0].values.some((c) => c[1] === 'money')) {
+                db.run('ALTER TABLE characters ADD COLUMN money INTEGER NOT NULL DEFAULT 5000');
+                console.log('[DB] таблица characters мигрирована: добавлена колонка money');
+            }
+            const ccols2 = db.exec('PRAGMA table_info(characters)');
+            if (ccols2[0] && !ccols2[0].values.some((c) => c[1] === 'chips')) {
+                db.run('ALTER TABLE characters ADD COLUMN chips INTEGER NOT NULL DEFAULT 0');
+                console.log('[DB] таблица characters мигрирована: добавлена колонка chips');
+            }
+        } catch (e) { /* ignore */ }
+        // Миграция: добавляем колонку comment в старую таблицу jails (если её нет)
+        try {
+            const jcols = db.exec('PRAGMA table_info(jails)');
+            if (jcols[0] && !jcols[0].values.some((c) => c[1] === 'comment')) {
+                db.run("ALTER TABLE jails ADD COLUMN comment TEXT NOT NULL DEFAULT ''");
+                console.log('[DB] таблица jails мигрирована: добавлена колонка comment');
+            }
+        } catch (e) { /* ignore */ }
         let count = 0;
         try {
             const rows = db.exec('SELECT COUNT(*) AS c FROM characters');
@@ -82,10 +124,14 @@ module.exports = {
         whenReady(() => {
             let result = null;
             try {
-                const res = db.exec('SELECT id, name, gender, appearance FROM characters WHERE social = ?', [social]);
+                const res = db.exec('SELECT id, name, gender, appearance, money, chips FROM characters WHERE social = ?', [social]);
                 const v = res[0] && res[0].values[0];
                 if (v) {
-                    result = { id: v[0], name: v[1], gender: v[2], appearance: JSON.parse(v[3] || '{}') };
+                    result = {
+                        id: v[0], name: v[1], gender: v[2], appearance: JSON.parse(v[3] || '{}'),
+                        money: v[4] == null ? 5000 : v[4],
+                        chips: v[5] == null ? 0 : v[5]
+                    };
                 }
             } catch (e) {
                 console.log(`[DB] getCharacter err: ${e}`);
@@ -140,6 +186,97 @@ module.exports = {
             } catch (e) {
                 console.log(`[DB] savePerms err: ${e}`);
             }
+        });
+    },
+    saveBalance(citizenId, money, chips) {
+        whenReady(() => {
+            try {
+                db.run('UPDATE characters SET money = ?, chips = ?, lastLogin = ? WHERE id = ?',
+                    [Math.max(0, parseInt(money, 10) || 0), Math.max(0, parseInt(chips, 10) || 0), Date.now(), citizenId]);
+                persist();
+            } catch (e) {
+                console.log(`[DB] saveBalance err: ${e}`);
+            }
+        });
+    },
+    saveJail(citizenId, release, reason, comment) {
+        whenReady(() => {
+            try {
+                db.run(
+                    'INSERT INTO jails (citizenId, release, reason, comment, updated) VALUES (?,?,?,?,?) ' +
+                    'ON CONFLICT(citizenId) DO UPDATE SET release=excluded.release, reason=excluded.reason, comment=excluded.comment, updated=excluded.updated',
+                    [citizenId, Math.floor(release), String(reason || ''), String(comment || ''), Date.now()]
+                );
+                persist();
+            } catch (e) {
+                console.log(`[DB] saveJail err: ${e}`);
+            }
+        });
+    },
+    removeJail(citizenId) {
+        whenReady(() => {
+            try {
+                db.run('DELETE FROM jails WHERE citizenId = ?', [citizenId]);
+                persist();
+            } catch (e) {
+                console.log(`[DB] removeJail err: ${e}`);
+            }
+        });
+    },
+    getJails(cb) {
+        whenReady(() => {
+            const out = [];
+            try {
+                const res = db.exec('SELECT citizenId, release, reason, comment FROM jails');
+                if (res[0]) {
+                    res[0].values.forEach((r) => out.push({ citizenId: r[0], release: r[1], reason: r[2] || '', comment: r[3] || '' }));
+                }
+            } catch (e) {
+                console.log(`[DB] getJails err: ${e}`);
+            }
+            cb(out);
+        });
+    },
+    saveWanted(citizenId, stars, reason) {
+        whenReady(() => {
+            try {
+                if (!stars || stars < 1) {
+                    db.run('DELETE FROM wanted WHERE citizenId = ?', [citizenId]);
+                } else {
+                    db.run(
+                        'INSERT INTO wanted (citizenId, stars, reason, updated) VALUES (?,?,?,?) ' +
+                        'ON CONFLICT(citizenId) DO UPDATE SET stars=excluded.stars, reason=excluded.reason, updated=excluded.updated',
+                        [citizenId, Math.max(1, Math.min(5, parseInt(stars, 10) || 1)), String(reason || ''), Date.now()]
+                    );
+                }
+                persist();
+            } catch (e) {
+                console.log(`[DB] saveWanted err: ${e}`);
+            }
+        });
+    },
+    removeWanted(citizenId) {
+        whenReady(() => {
+            try {
+                db.run('DELETE FROM wanted WHERE citizenId = ?', [citizenId]);
+                persist();
+            } catch (e) {
+                console.log(`[DB] removeWanted err: ${e}`);
+            }
+        });
+    },
+    getWanted(cb) {
+        whenReady(() => {
+            const out = [];
+            try {
+                const res = db.exec('SELECT citizenId, stars, reason FROM wanted');
+                if (res[0]) {
+                    res[0].values.forEach((r) => out.push({ citizenId: r[0], stars: r[1] || 0, reason: r[2] || '' }));
+                }
+            } catch (e) {
+                console.log(`[DB] getWanted err: ${e}`);
+            }
+            cb(out);
         });
     }
 };

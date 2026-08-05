@@ -4,15 +4,30 @@ let espEnabled = false;
 let vfly = false; // полёт на машине (/vfly)
 const player = mp.players.local;
 
-let chatOpen = false;
-let chatScrollInjected = false;
-let escHold = 0; // фреймов после ESC — блокируем раньше раскрытие меню паузы
+// Тестовая машина (/veh test) — супер-мощь в render
+const TEST_MODEL_HASH = mp.game.joaat('test') >>> 0;
+
+let escHold = 0; // фреймов после закрытия чата — блокируем раннее раскрытие меню паузы
 
 // Состояние тюрьмы (таймер показывает клиент)
 let jailActive = false;
 let jailSeconds = 0;
 let jailReason = '';
+let jailComment = '';
 let jailLastTickAt = 0;
+
+// Маркер у входа в тюрьму (интерфейс посадки задержанного):
+// большой маркер в мире + блин на радаре, видны админам с правом ajail
+const PRISON_MARKER_POS = new mp.Vector3(1690.693, 2591.579, 45.901);
+const PRISON_MARKER_RADIUS = 20.0;
+let prisonBlip = null;
+let prisonMarkerPos = null;
+
+// Браузер интерфейса посадки в тюрьму
+let jailBrowser = null;
+
+// Метки выхода игроков от сервера: citizenId -> { x, y, z, text }
+const quitMarkersMap = new Map();
 
 // Браузер меню полномочий
 let permBrowser = null;
@@ -128,6 +143,21 @@ mp.events.add('admin:invis', (state) => {
     try { player.setCollision(!state, !state); } catch (e) { /* ignore */ }
 });
 
+// /sbiv — сбить анимацию: дефолтное положение, обнулить скорость/ускорение.
+mp.events.add('admin:sbiv', () => {
+    const me = mp.players.local;
+    if (!me.handle) return;
+    // Очистка всех задач: выйти из любых анимаций, рагдолла, сидения, прицела
+    try { mp.game.invoke('0xAAA34F8A7CB32098', me.handle, true); } catch (e) { /* CLEAR_PED_TASKS_IMMEDIATELY */ }
+    try { mp.game.invoke('0xE1EF3C1216AFF2CD', me.handle); } catch (e) { /* CLEAR_PED_TASKS */ }
+    // Линейная скорость педа в ноль
+    try { mp.game.invoke('0x1C99BB7B6E96D16F', me.handle, 0, 0, 0); } catch (e) { /* SET_ENTITY_VELOCITY */ }
+    // Если сидит в машине — сбросить скорость транспорта
+    if (me.vehicle && me.vehicle.handle) {
+        try { mp.game.invoke('0x1C99BB7B6E96D16F', me.vehicle.handle, 0, 0, 0); } catch (e) { /* SET_ENTITY_VELOCITY */ }
+    }
+});
+
 // Свои права (от сервера, для F5 и т.п.)
 let myPerms = {};
 mp.events.add('perm:sync', (json) => {
@@ -159,12 +189,42 @@ function getCameraDirection() {
     };
 }
 
-// 100% Рабочая выдача оружия через системный натив GTA V (без вызовов несуществующих функций)
-mp.events.add('admin:giveWeapon', (weaponHash, ammo) => {
-    // Native 0xBF0FD6E56C964FCB = GIVE_WEAPON_TO_PED
-    mp.game.invoke('0xBF0FD6E56C964FCB', player.handle, weaponHash >>> 0, ammo, false, true);
-    // Native 0xADF692B254977C0C = SET_CURRENT_PED_WEAPON (сразу берёт в руки)
-    mp.game.invoke('0xADF692B254977C0C', player.handle, weaponHash >>> 0, true);
+// Локальный joaat: RAGE:MP может передавать хэши > 2^31 с потерей точности (float32),
+// поэтому хэш всегда считается на той стороне, где он нужен, из имени-строки.
+function localJoaat(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) {
+        h = (h + str.charCodeAt(i)) & 0xFFFFFFFF;
+        h = (h + ((h << 10) & 0xFFFFFFFF)) & 0xFFFFFFFF;
+        h = (h ^ (h >>> 6)) & 0xFFFFFFFF;
+    }
+    h = (h + ((h << 3) & 0xFFFFFFFF)) & 0xFFFFFFFF;
+    h = (h ^ (h >>> 11)) & 0xFFFFFFFF;
+    h = (h + ((h << 15) & 0xFFFFFFFF)) & 0xFFFFFFFF;
+    return h >>> 0;
+}
+
+// Выдача оружия по имени (строка передаётся без потерь; хэш считаем локально)
+// Клиентский обработчик выдачи оружия
+mp.events.add('admin:giveWeaponName', (weaponName, ammo) => {
+    const me = mp.players.local;
+    if (!me || !me.handle) return;
+
+    // В RAGE:MP на клиенте хеш берется через mp.game.joaat
+    const hash = mp.game.joaat(weaponName) >>> 0;
+
+    try {
+        // Выдаем и берем в руки штатным методом RAGE:MP (третий параметр true = достать в руки)
+        me.giveWeapon(hash, ammo || 999, true);
+    } catch (e) { /* ignore */ }
+
+    setTimeout(() => {
+        // Вместо вызова натива берем хеш текущего оружия прямо из свойства me.weapon
+        const currentHash = (me.weapon) >>> 0;
+        const inHand = (currentHash === hash);
+
+        mp.events.callRemote('admin:gunConfirmResult', weaponName, inHand, currentHash);
+    }, 200);
 });
 
 // Данные машин от сервера (ID + топливо)
@@ -191,25 +251,28 @@ mp.events.add('admin:vehList', (list) => {
     }
 });
 
-// ---------- Чат: прокрутка колёсиком мыши ----------
-mp.keys.bind(0x54, true, () => { chatOpen = true; }); // T — открыть ввод чата
-mp.keys.bind(0x0D, true, () => { chatOpen = false; }); // Enter — отправить/закрыть
-mp.keys.bind(0x1B, true, () => { // ESC — закрыть чат и НЕ давать открыться паузе/карте
-    chatOpen = false;
-    escHold = 2;
+// Чат — кастомный CEF (client_packages/chat). Ввод открывается на T, история ↑/↓ и скролл
+// PageUp/PageDown сделаны внутри страницы. Здесь только закрытие меню полномочий на ESC.
+mp.keys.bind(0x1B, true, () => { // ESC — закрыть меню полномочий / интерфейс посадки и скрыть курсор
     closePerm();
+    closeJailUi();
     try {
         if (mp.gui.cursor && typeof mp.gui.cursor.show === 'function') {
             mp.gui.cursor.show(false, false);
         }
     } catch (e) { /* ignore */ }
 });
+// Сразу после закрытия строки ввода чата не даём ESC открыть меню паузы/карту
+mp.events.add('chatInput', (state) => {
+    if (!state) escHold = 2;
+});
 
 // События тюрьмы от сервера (таймер / блок полёта)
-mp.events.add('jail:start', (seconds, reason) => {
+mp.events.add('jail:start', (seconds, reason, comment) => {
     jailActive = true;
     jailSeconds = Number(seconds) || 0;
     jailReason = reason ? String(reason) : '';
+    jailComment = comment ? String(comment) : '';
 });
 mp.events.add('jail:tick', (seconds) => {
     if (jailActive) {
@@ -221,6 +284,86 @@ mp.events.add('jail:stop', () => {
     jailActive = false;
     jailSeconds = 0;
     jailReason = '';
+    jailComment = '';
+});
+
+// ---------- Маркер тюрьмы (блин на радаре + жёлтый маркер в мире) ----------
+// Сам маркер рисуем каждый кадр нативом drawMarker (mp.markers.new в этой
+// сборке клиента не отображает) — круг на земле + стены вверх как градиент.
+mp.events.add('prison:blip', (x, y, z) => {
+    try { if (prisonBlip) { prisonBlip.destroy(); prisonBlip = null; } } catch (e) { /* ignore */ }
+    prisonMarkerPos = new mp.Vector3(x, y, z);
+    try {
+        prisonBlip = mp.blips.new(163, prisonMarkerPos, { name: 'Тюрьма', color: 1, scale: 1.4 });
+    } catch (e) { /* ignore */ }
+});
+
+// ---------- Маркеры выхода игроков («вышел N мин назад») ----------
+mp.events.add('quitmarker:list', (payload) => {
+    quitMarkersMap.clear();
+    try {
+        const list = JSON.parse(payload) || [];
+        const now = Date.now();
+        list.forEach((m) => {
+            const left = Math.max(0, now - m[5]);
+            const mins = Math.floor(left / 60000);
+            const h = Math.floor(mins / 60);
+            const mm = mins % 60;
+            const ago = h > 0 ? `${h} ч ${mm} мин` : `${mins} мин`;
+            quitMarkersMap.set(String(m[4]), { x: m[0], y: m[1], z: m[2], text: `${m[3]} ${m[4]} вышел ${ago} назад` });
+        });
+    } catch (e) { /* ignore */ }
+});
+
+// ---------- Интерфейс посадки в тюрьму (CEF) ----------
+const closeJailUi = () => {
+    if (jailBrowser) {
+        try { jailBrowser.destroy(); } catch (e) { /* ignore */ }
+        jailBrowser = null;
+    }
+    try { mp.gui.cursor.show(false, false); } catch (e) { /* ignore */ }
+};
+
+mp.events.add('prison:openUi', (listJson) => {
+    if (jailBrowser) closeJailUi();
+    try {
+        jailBrowser = mp.browsers.new('package://admin/jail.html');
+    } catch (e) { closeJailUi(); return; }
+    jailBrowser.__pending = listJson || '{}';
+    try { mp.gui.cursor.show(true, true); } catch (e) { /* ignore */ }
+});
+
+// CEF готов — передаём данные
+mp.events.add('jailCef:ready', () => {
+    if (!jailBrowser) return;
+    try { jailBrowser.execute(`window.__jailInit(${jailBrowser.__pending || '{}'})`); } catch (e) { /* ignore */ }
+});
+
+// CEF: посадить в тюрьму -> сервер
+mp.events.add('jailCef:submit', (id, minutes, reason, comment) => {
+    mp.events.callRemote('arrest:jail', String(id), String(minutes), String(reason || ''), String(comment || ''));
+});
+
+// CEF: закрыть браузер
+mp.events.add('jailCef:close', closeJailUi);
+
+// U-замена: E — открыть интерфейс посадки в тюрьму у маркера
+mp.keys.bind(0x45, true, () => { // 0x45 = E
+    if (jailBrowser) return;
+    if (!myPerms.ajail) return;
+    try {
+        let typing = false;
+        try { typing = !!mp.players.local.isTypingInChat; } catch (e) { typing = false; }
+        if (!typing) { try { typing = mp.gui.chat.active === true; } catch (e2) { typing = false; } }
+        if (typing) return;
+    } catch (e) { /* ignore */ }
+    try {
+        const p = mp.players.local.position;
+        if (Math.hypot(p.x - PRISON_MARKER_POS.x, p.y - PRISON_MARKER_POS.y) > PRISON_MARKER_RADIUS) {
+            return;
+        }
+    } catch (e) { /* ignore */ }
+    mp.events.callRemote('arrest:open', true);
 });
 
 // ---------- Меню полномочий (CEF) ----------
@@ -247,111 +390,6 @@ mp.events.add('perm:save', (targetId, cmdsJson) => {
 // CEF: закрыть браузер
 mp.events.add('perm:close', closePerm);
 
-// Чат: прокрутка истории колёсиком мыши (при открытом вводе), PageUp/PageDown в любом
-// состоянии, и авто-следование вниз ТОЛЬКО если игрок не листает историю.
-const injectChatScroll = () => {
-    try {
-        if (typeof mp.gui === 'undefined' || typeof mp.gui.execute !== 'function') return;
-        mp.gui.execute(
-            "(function(){ if (window.__rcs) return; window.__rcs = true; " +
-            "var find = function(doc){ var ul = doc.getElementById('chat_messages'); if (ul) { var wrap = doc.getElementById('chat_messages_wrapper'); if (wrap) ul = wrap; } return ul; }; " +
-            "var ul = find(document); " +
-            "if (!ul) { try { var fr = document.querySelectorAll('iframe'); for (var i = 0; i < fr.length; i++) { ul = fr[i].contentDocument && find(fr[i].contentDocument); if (ul) break; } } catch (e) {} } " +
-            "if (!ul) return; " +
-            "var sc = ul; " +
-            "sc.style.overflowY = 'auto'; sc.style.overflowX = 'hidden'; sc.style.scrollbarWidth = 'none'; " +
-            "window.__chatScroll = function(d){ sc.scrollTop += d; }; " +
-            "var input = document.getElementById('chat_input') || document.getElementById('chatInput'); " +
-            "sc.addEventListener('wheel', function(e){ " +
-            "  if (input && document.activeElement === input) { e.preventDefault(); e.stopPropagation(); sc.scrollTop += (e.deltaY > 0 ? 48 : -48); } " +
-            "}, { passive: false }); " +
-            "var needFollow = function(){ return sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 24; }; " +
-            "if (window.MutationObserver) { " +
-            "  var mo = new MutationObserver(function(){ if (needFollow()) sc.scrollTop = sc.scrollHeight; }); " +
-            "  mo.observe(ul, { childList: true, subtree: true }); " +
-            "} })();"
-        );
-        chatScrollInjected = true;
-    } catch (e) { /* ignore */ }
-};
-setTimeout(injectChatScroll, 3000);
-setInterval(injectChatScroll, 30000);
-
-// PageUp / PageDown листают историю чата даже при закрытом вводе
-mp.keys.bind(0x21, true, () => { // PageUp
-    try {
-        if (typeof mp.gui !== 'undefined' && typeof mp.gui.execute === 'function') {
-            mp.gui.execute('if (window.__chatScroll) window.__chatScroll(-400);');
-        }
-    } catch (e) { /* ignore */ }
-});
-mp.keys.bind(0x22, true, () => { // PageDown
-    try {
-        if (typeof mp.gui !== 'undefined' && typeof mp.gui.execute === 'function') {
-            mp.gui.execute('if (window.__chatScroll) window.__chatScroll(400);');
-        }
-    } catch (e) { /* ignore */ }
-});
-
-// История чата: стрелки ↑/↓ подставляют прошлые сообщения/команды.
-// Перехват на уровне игры (mp.keys.bind), чтобы нативные стрелки не блокировали;
-// текст в поле ввода пишется через mp.gui.execute с поиском по корневому DOM и iframe.
-const chatHistory = [];
-let chatHistoryIndex = -1;
-
-const pushChatHistory = (text) => {
-    if (!text || !String(text).trim().length) return;
-    const t = String(text);
-    if (chatHistory[chatHistory.length - 1] !== t) {
-        chatHistory.push(t);
-        if (chatHistory.length > 50) chatHistory.shift();
-    }
-    chatHistoryIndex = -1;
-};
-
-// Ловим отправленные сообщения и команды (клиентские события)
-mp.events.add('playerChat', (text) => pushChatHistory(text));
-mp.events.add('playerCommand', (command) => pushChatHistory(command));
-
-// Запись текста в поле ввода дефолтного чата (корень + iframe + input-элементы)
-const setChatInputValue = (text) => {
-    try {
-        if (typeof mp.gui === 'undefined' || typeof mp.gui.execute !== 'function') return;
-        mp.gui.execute(
-            "(function(){ " +
-            "var find = function(doc){ " +
-            "  var el = doc.getElementById('chat_input') || doc.getElementById('chatInput'); " +
-            "  if (!el) { var els = doc.querySelectorAll('#chat input, #chat textarea, input[type=text], textarea'); el = els.length ? els[els.length - 1] : null; } " +
-            "  return el; }; " +
-            "var el = find(document); " +
-            "if (!el) { try { var fr = document.querySelectorAll('iframe'); for (var i = 0; i < fr.length; i++) { el = fr[i].contentDocument && find(fr[i].contentDocument); if (el) break; } } catch (e) {} } " +
-            "if (el) { el.value = " + JSON.stringify(text) + "; el.focus(); el.dispatchEvent(new Event('input', { bubbles: true })); } })();"
-        );
-    } catch (e) { /* ignore */ }
-};
-
-mp.keys.bind(0x26, true, () => { // ArrowUp — к более старым командам
-    try {
-        if (!mp.gui.chat || !mp.gui.chat.active) return;
-        if (!chatHistory.length) return;
-        chatHistoryIndex = chatHistoryIndex === -1 ? chatHistory.length - 1 : Math.max(0, chatHistoryIndex - 1);
-        setChatInputValue(chatHistory[chatHistoryIndex]);
-    } catch (e) { /* ignore */ }
-});
-mp.keys.bind(0x28, true, () => { // ArrowDown — к более свежим
-    try {
-        if (!mp.gui.chat || !mp.gui.chat.active) return;
-        if (chatHistoryIndex === -1) return;
-        if (chatHistoryIndex < chatHistory.length - 1) {
-            chatHistoryIndex++;
-            setChatInputValue(chatHistory[chatHistoryIndex]);
-        } else {
-            chatHistoryIndex = -1;
-            setChatInputValue('');
-        }
-    } catch (e) { /* ignore */ }
-});
-
 // Быстрое возрождение на клавишу R (в тюрьме R разрешена)
 mp.keys.bind(0x52, true, () => { // 0x52 = R
     if (!myPerms.respawn && !jailActive) return;
@@ -364,7 +402,6 @@ mp.keys.bind(0x52, true, () => { // 0x52 = R
 let seatbelt = false;
 mp.keys.bind(0x4A, true, () => { // 0x4A = J
     if (!player.vehicle) {
-        mp.gui.chat.push('!{FF4444}Вы не в транспорте');
         return;
     }
     seatbelt = !seatbelt;
@@ -413,15 +450,15 @@ mp.events.add('cuff:localState', (state) => {
 // F5 — переключение полёта (noclip)
 mp.keys.bind(0x74, true, () => { // 0x74 = F5
     if (jailActive) {
-        mp.gui.chat.push('!{FF4444}В тюрьме полёт запрещён!');
+        chatPush('!{FF4444}В тюрьме полёт запрещён!');
         return;
     }
     if (myCuffed) {
-        mp.gui.chat.push('!{FF4444}Вы в наручниках — полёт недоступен!');
+        chatPush('!{FF4444}Вы в наручниках — полёт недоступен!');
         return;
     }
     if (!myPerms.noclip) {
-        mp.gui.chat.push('!{FF4444}У вас нет прав на F5 (полёт)!');
+        chatPush('!{FF4444}У вас нет прав на F5 (полёт)!');
         return;
     }
     mp.events.call('admin:toggleNoclip');
@@ -451,7 +488,7 @@ mp.events.add('admin:toggleNoclip', () => {
 mp.events.add('admin:vflyToggle', () => {
     if (jailActive) return;
     if (!player.vehicle) {
-        mp.gui.chat.push('!{FF4444}Вы должны находиться в машине!');
+        chatPush('!{FF4444}Вы должны находиться в машине!');
         return;
     }
     vfly = !vfly;
@@ -547,6 +584,35 @@ const drawEspLabel = (worldPos, lines, color, scale = 0.35) => {
 // Имена над головами рисует отдельный ресурс nametags.js (mp.nametags.enabled = false +
 // ручная отрисовка имён). Здесь НЕ включаем системные плашки (иначе вернётся дефолтный ник + полоска HP).
 
+// ---------- NPC-трафик (/traffic, гл. админ) ----------
+// Сущности (педы + машины с водителями) спавнит СЕРВЕР через mp.peds/mp.vehicles —
+// такие объекты основной части видят ВСЕ игроки, а не только админ.
+// Здесь в клиенте мы только «оживляем» застримленные к себе педы:
+// пешеход — TASK_WANDER_IN_AREA (блуждание), водитель — TASK_VEHICLE_DRIVE_WANDER (езда).
+let trafficDensity = 0; // 0-100 (%): сколько NPC спавнить; 0 = выключено
+
+const TRAFFIC_CAR_MODELS = ['adder', 'buffalo', 'blista', 'felon', 'oracle', 'sultan', 'sentinel', 'surano', 'kuruma', 'comet2'];
+const TRAFFIC_PED_MODELS = ['a_m_y_hipster_01', 'a_m_m_skater_01', 'a_f_m_fat_old_01', 'a_m_y_stwhi_01', 'a_m_m_bevhills_02', 'a_f_y_business_02', 'a_m_y_beach_01'];
+const TRAFFIC_CAR_HASHES = TRAFFIC_CAR_MODELS.map((m) => mp.game.joaat(m) >>> 0);
+const TRAFFIC_PED_HASHES = TRAFFIC_PED_MODELS.map((m) => mp.game.joaat(m) >>> 0);
+
+mp.events.add('entityStreamIn', (entity) => {
+    if (trafficDensity <= 0) return;
+    if (entity.type !== 'ped') return;
+    if (TRAFFIC_PED_HASHES.indexOf(entity.model >>> 0) === -1) return;
+    try {
+        if (entity.vehicle && entity.vehicle.handle &&
+            TRAFFIC_CAR_HASHES.indexOf(entity.vehicle.model >>> 0) !== -1) {
+            // Водитель трафик-авто: езда по городу (TASK_VEHICLE_DRIVE_WANDER: пед, авто, скорость, стиль)
+            mp.game.invoke('0x480142959D337D00', entity.handle, entity.vehicle.handle, 25.0 + Math.random() * 10, 0);
+        } else {
+            // Обычный пешеход: блуждание в радиусе 50 м от точки (TASK_WANDER_IN_AREA)
+            const p = entity.position;
+            mp.game.invoke('0xE054346CA3A0F315', entity.handle, p.x, p.y, p.z, 50, 0, 0);
+        }
+    } catch (e) { /* ignore */ }
+});
+
 mp.events.add('render', () => {
     // Спектатор: камера следует за целью, можно крутить мышью и зумить колёсиком
     if (specTargetId != null && specCamera) {
@@ -630,8 +696,10 @@ mp.events.add('render', () => {
         }
     });
 
-    // Чат открыт — не даём колёсику менять оружие
-    if (chatOpen) {
+    // Идёт набор текста в чате — не даём колёсику менять оружие
+    let chatTyping = false;
+    try { chatTyping = isChatTyping(); } catch (e) { chatTyping = false; }
+    if (chatTyping) {
         mp.game.controls.disableControlAction(0, 14, true); // Колёсико вниз
         mp.game.controls.disableControlAction(0, 15, true); // Колёсико вверх
     }
@@ -656,24 +724,15 @@ mp.events.add('render', () => {
         } catch (e) { /* ignore */ }
         const mm = String(Math.floor(timeLeft / 60)).padStart(2, '0');
         const ss = String(Math.floor(timeLeft % 60)).padStart(2, '0');
-        drawTextRow(0.95, 0.72, 'ТЮРЬМА DEMORGAN', [255, 70, 70, 255], 0.5);
+        drawTextRow(0.95, 0.72, 'ТЮРЬМА', [255, 70, 70, 255], 0.5);
         drawTextRow(0.95, 0.80, `${mm}:${ss}`, [255, 255, 255, 255], 1.4);
+        let ty = 0.885;
         if (jailReason) {
-            // Причина крупнее, перенос на две строки
-            const words = String(jailReason);
-            const max = 22;
-            const lines = [];
-            let cur = '';
-            let num = 0;
-            for (let ch of words) {
-                cur += ch;
-                num++;
-                if (num >= max) { lines.push(cur); cur = ''; num = 0; }
-            }
-            if (cur) lines.push(cur);
-            lines.slice(0, 3).forEach((line, i) => {
-                drawTextRow(0.95, 0.885 + i * 0.045, line, [255, 230, 160, 255], 0.5);
-            });
+            drawTextRow(0.95, ty, 'ПРИЧИНА: ' + jailReason, [255, 230, 160, 255], 0.4);
+            ty += 0.045;
+        }
+        if (jailComment) {
+            drawTextRow(0.95, ty, 'КОММЕНТАРИЙ: ' + jailComment, [255, 230, 160, 255], 0.4);
         }
     }
 
@@ -791,6 +850,47 @@ mp.events.add('render', () => {
         } catch (e) { /* ignore */ }
     }
 
+    if (player.vehicle && player.vehicle.handle) {
+        const veh = player.vehicle;
+        // Радио в ЛЮБОЙ машине выключено (SET_VEHICLE_RADIO_ENABLED = off)
+        try { mp.game.invoke('0x3B988190C0AA6C0B', veh.handle, false); } catch (e) { /* ignore */ }
+        // Тестовая машина: супер-мощь (множители двигателя) + кап скорости 1000 км/ч
+        if ((veh.model >>> 0) === TEST_MODEL_HASH) {
+            try { mp.game.invoke('0x93A3996368C94158', veh.handle, 50.0); } catch (e) { /* _SET_VEHICLE_ENGINE_POWER_MULTIPLIER */ }
+            try { mp.game.invoke('0xB59E4BD37AE292DB', veh.handle, 50.0); } catch (e) { /* _SET_VEHICLE_ENGINE_TORQUE_MULTIPLIER */ }
+            try { mp.game.invoke('0x0E46A3FCBDE2A1B1', veh.handle, 277.78); } catch (e) { /* SET_ENTITY_MAX_SPEED: 277.78 м/с = 1000 км/ч */ }
+        }
+    }
+
+    // ---------- Спидометр (справа снизу, если в машине) ----------
+    if (player.vehicle && player.getHealth() > 0) {
+        try {
+            const veh = player.vehicle;
+            const kmh = Math.round(Math.abs(veh.getSpeed() * 3.6));
+            // Скорость крупно
+            drawTextRow(0.95, 0.885, `${kmh} км/ч`, [255, 255, 255, 255], 1.2);
+            // Передача + топливо мелкой строкой
+            let sub = '';
+            const gear = veh.gear;
+            if (gear != null) {
+                if (gear === 0 && Math.abs(veh.getSpeed()) > 0.5) sub += 'R';
+                else if (gear === 0) sub += 'N';
+                else sub += gear;
+            }
+            let fuel = null;
+            const info = veh.remoteId != null ? vehInfo.get(veh.remoteId) : null;
+            if (info) fuel = info.fuel;
+            if (typeof veh.getVariable === 'function' && fuel == null) {
+                try { fuel = veh.getVariable('fuel'); } catch (e) { /* ignore */ }
+            }
+            if (fuel != null) {
+                if (sub) sub += ' · ';
+                sub += `${Number(fuel).toFixed(1)} л`;
+            }
+            if (sub) drawTextRow(0.95, 0.93, sub, [150, 200, 255, 255], 0.45);
+        } catch (e) { /* ignore */ }
+    }
+
     if (!noclip) return;
 
     // Клавиши движения читаем обычным isControlPressed (перемещение делаем
@@ -826,6 +926,37 @@ mp.events.add('render', () => {
     if (mp.game.controls.isControlPressed(0, 36)) pos.z -= speed;
 
     player.position = pos;
+
+    // ---------- Жёлтый маркер тюрьмы (круг на земле + стены-градиент вверх) ----------
+    // drawMarker: тип 4 — круг на земле; тип 1 — вертикальный цилиндр («стены»).
+    // Рисуем только вблизи, чтобы не тратить кадры на дальних концах карты.
+    if (prisonMarkerPos) {
+        const px = prisonMarkerPos.x;
+        const py = prisonMarkerPos.y;
+        const pz = prisonMarkerPos.z;
+        const lpPos = player.position;
+        const d = Math.sqrt((lpPos.x - px) * (lpPos.x - px) + (lpPos.y - py) * (lpPos.y - py));
+        if (d < 400) {
+            try {
+                // Круг на земле (жёлтый) — вплотную к точке
+                mp.game.graphics.drawMarker(4, px, py, pz + 0.02, 0, 0, 0, 0, 0, 0, 10, 10, 0.4, 255, 200, 20, 130, false, false, 2, false, null, null, false);
+                // Стены вверх (цилиндр-градиент, полупрозрачный жёлтый) — от земли
+                mp.game.graphics.drawMarker(1, px, py, pz + 0.1, 0, 0, 0, 0, 0, 0, 9, 9, 2.4, 255, 220, 40, 80, false, false, 2, false, null, null, false);
+            } catch (e) { /* ignore */ }
+        }
+    }
+    // Метки выхода игроков: красный круг на земле + надпись «вышел ... назад»
+    if (quitMarkersMap.size > 0) {
+        try {
+            const qp = player.position;
+            quitMarkersMap.forEach((mk) => {
+                const dx = qp.x - mk.x, dy = qp.y - mk.y;
+                if (dx * dx + dy * dy > 300 * 300) return;
+                mp.game.graphics.drawMarker(4, mk.x, mk.y, mk.z + 0.05, 0, 0, 0, 0, 0, 0, 1.4, 1.4, 0.3, 255, 60, 60, 150, false, false, 2, false, null, null, false);
+                drawEspLabel(new mp.Vector3(mk.x, mk.y, mk.z + 1.6), [mk.text], [255, 220, 160, 255], 0.33);
+            });
+        } catch (e) { /* ignore */ }
+    }
 });
 
 // ---------- Проверка DLC-модели после /veh ----------
@@ -839,9 +970,9 @@ mp.events.add('veh:verify', (name, hash) => {
             : false;
     } catch (e) { /* ignore */ }
     if (mounted) {
-        mp.gui.chat.push(`!{44FF44}Модель ${name} загружена на клиенте (DLC смонтирован).`);
+        chatPush(`!{44FF44}Модель ${name} загружена на клиенте (DLC смонтирован).`);
     } else {
-        mp.gui.chat.push(`!{FF4444}Модель ${name} НЕ загружена на клиенте — DLC не смонтирован/не скачан. Перезайди полностью после рестарта сервера.`);
+        chatPush(`!{FF4444}Модель ${name} НЕ загружена на клиенте — DLC не смонтирован/не скачан. Перезайди полностью после рестарта сервера.`);
     }
 });
 
@@ -876,37 +1007,38 @@ mp.events.add('playerCommand', (command) => {
     try {
         const wp = mp.game.ui.getFirstBlipInfoId(8); // 8 = waypoint
         if (!mp.game.ui.doesBlipExist(wp)) {
-            mp.gui.chat.push('!{FF4444}Сначала поставьте метку на карте (M → правая кнопка мыши).');
+            chatPush('!{FF4444}Сначала поставьте метку на карте (M → правая кнопка мыши).');
             return;
         }
         const coords = mp.game.ui.getBlipInfoIdCoord(wp);
-        // Реальная высота земли, чтобы не телепортнуть под карту
+        // Реальная высота земли, чтобы не телепортнуть под карту.
+        // Ставим ТОЧКУ ВЫШЕ цели и даём гравитации уронить на поверхность —
+        // так надёжнее, чем прижиматься к земле (иначе слегка «проваливаемся»).
         let groundZ = 0;
         try {
             if (typeof mp.game.gameplay.getGroundZFor3dCoord === 'function') {
                 groundZ = mp.game.gameplay.getGroundZFor3dCoord(coords.x, coords.y, 1000.0, 0, false);
             }
         } catch (e) { /* ignore */ }
+        const zOff = (mp.players.local.vehicle) ? 4.5 : 3.0;
         let z;
         if (!groundZ || !Number.isFinite(groundZ)) {
-            z = (typeof coords.z === 'number' && Number.isFinite(coords.z)) ? coords.z : 50.0;
+            z = ((typeof coords.z === 'number' && Number.isFinite(coords.z)) ? coords.z : 50.0) + zOff;
         } else {
-            z = groundZ + 1.0; // чуть выше земли
+            z = groundZ + zOff;
         }
         mp.events.callRemote('mtp:teleport', coords.x, coords.y, z);
     } catch (e) {
-        mp.gui.chat.push('!{FF4444}Не удалось получить координаты метки.');
+        chatPush('!{FF4444}Не удалось получить координаты метки.');
     }
 });
 
 // ---------- Маркер преступника (/orm) ----------
 // Блин на карте; координаты каждую секунду присылает сервер (не зависит от
-// стрима/дальности цели). Живёт ~35 сек, новый /orm заменяет старый.
+// стрима/дальности цели). Бессрочный — убирается /unorm (событие orm:stop).
 let ormBlip = null;
-let ormBlipTimer = null;
 
 function ormClear() {
-    if (ormBlipTimer) { clearTimeout(ormBlipTimer); ormBlipTimer = null; }
     if (ormBlip) { try { ormBlip.destroy(); } catch (e) { /* ignore */ } ormBlip = null; }
 }
 
@@ -919,7 +1051,6 @@ mp.events.add('orm:showMarker', (name, stars, reason) => {
             scale: 1.0
         });
     } catch (e) { /* ignore */ }
-    ormBlipTimer = setTimeout(ormClear, 35000);
 });
 
 mp.events.add('orm:tick', (x, y, z) => {
@@ -931,3 +1062,132 @@ mp.events.add('orm:tick', (x, y, z) => {
 });
 
 mp.events.add('orm:stop', ormClear);
+
+// ---------- Бинды клавиш (/bind) ----------
+// Привязка цепочки команд к клавише: /bind a /fly;/givemoney 100 —
+// нажатие 'a' выполнит обе команды. Хранятся на клиенте (mp.storage).
+const BIND_STORAGE_KEY = 'adminKeyBinds';
+const RESERVED_VK = { 0x1B: 1, 0x54: 1, 0x52: 1, 0x4A: 1, 0x45: 1, 0x74: 1 }; // ESC, T, R, J, E, F5
+
+const KEY_TO_VK = (() => {
+    const m = {};
+    for (let i = 0; i < 26; i++) m[String.fromCharCode(65 + i)] = 0x41 + i; // A-Z
+    for (let i = 0; i < 10; i++) m[String(i)] = 0x30 + i; // 0-9
+    for (let i = 1; i <= 12; i++) m['F' + i] = 0x6F + i; // F1-F12
+    const extra = {
+        SPACE: 0x20, ENTER: 0x0D, TAB: 0x09, BACKSPACE: 0x08,
+        LSHIFT: 0xA0, RSHIFT: 0xA1, LCTRL: 0xA2, RCTRL: 0xA3, LALT: 0xA4, RALT: 0xA5,
+        INSERT: 0x2D, DELETE: 0x2E, HOME: 0x24, END: 0x23, PGUP: 0x21, PGDOWN: 0x22,
+        MINUS: 0xBD, EQUALS: 0xBB, SEMICOLON: 0xBA, QUOTE: 0xDE, COMMA: 0xBC,
+        PERIOD: 0xBE, SLASH: 0xBF, LBRACKET: 0xDB, RBRACKET: 0xDD, BACKSLASH: 0xDC, TILDE: 0xC0
+    };
+    Object.keys(extra).forEach((k) => { m[k] = extra[k]; });
+    return m;
+})();
+
+const VK_TO_NAME = (() => {
+    const m = {};
+    Object.keys(KEY_TO_VK).forEach((k) => { m[KEY_TO_VK[k]] = k; });
+    return m;
+})();
+
+let keyBinds = {}; // vk (число-ключ) -> 'команда;команда'
+const boundVk = new Set(); // на какие VK уже повесили обработчик
+
+const saveBinds = () => {
+    try {
+        const arr = Object.keys(keyBinds).map((vk) => [Number(vk), keyBinds[vk]]);
+        mp.storage.set(BIND_STORAGE_KEY, JSON.stringify(arr));
+    } catch (e) { /* ignore */ }
+};
+
+const loadBinds = () => {
+    try {
+        const raw = mp.storage.get(BIND_STORAGE_KEY);
+        const arr = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(arr)) arr.forEach((b) => { keyBinds[b[0]] = String(b[1]); });
+    } catch (e) { keyBinds = {}; }
+};
+
+const applyBind = (vk) => {
+    if (boundVk.has(vk)) return;
+    boundVk.add(vk);
+    try {
+        mp.keys.bind(Number(vk), true, () => {
+            if (isChatTyping()) return;
+            const cmds = keyBinds[vk];
+            if (!cmds) return;
+            cmds.split(';').forEach((c) => {
+                c = String(c).replace(/^\//, '').trim();
+                if (!c) return;
+                mp.events.callRemote('bind:execute', c);
+            });
+        });
+    } catch (e) { boundVk.delete(vk); }
+};
+
+loadBinds();
+Object.keys(keyBinds).forEach((vk) => applyBind(vk));
+
+// /bind, /unbind, /binds обрабатываются на клиенте (серверу такие команды не нужны)
+mp.events.add('playerCommand', (command) => {
+    let parts;
+    try { parts = String(command).trim().split(/\s+/); } catch (e) { return; }
+    if (!parts.length) return;
+    const first = parts[0].toLowerCase();
+    if (first !== 'bind' && first !== 'unbind' && first !== 'binds') return;
+
+    if (first === 'binds') {
+        const keys = Object.keys(keyBinds);
+        if (keys.length === 0) {
+            chatPush('!{FFFF00}Бинды не заданы. Пример: /bind a /fly;/givemoney 100');
+            return;
+        }
+        chatPush('!{FFFF00}Ваши бинды:');
+        keys.forEach((vk) => {
+            const nm = VK_TO_NAME[Number(vk)] || String(vk);
+            chatPush(` !{44FF44}${nm}: !{FFFFFF}/${keyBinds[vk].split(';').join('  /')}`);
+        });
+        return;
+    }
+
+    const keyName = parts[1] ? parts[1].toUpperCase() : '';
+    const vk = KEY_TO_VK[keyName];
+    if (vk === undefined) {
+        chatPush('!{FF4444}Клавиша не поддерживается. Доступны: A-Z, 0-9, F1-F12, SPACE, TAB, LSHIFT, RSHIFT, LCTRL, RCTRL, LALT, RALT, MINUS, EQUALS, COMMA, PERIOD, SLASH и др.');
+        return;
+    }
+    if (RESERVED_VK[vk]) {
+        chatPush('!{FF4444}Клавиша занята системой (ESC / T / R / J / E / F5). Выберите другую.');
+        return;
+    }
+
+    if (first === 'unbind') {
+        if (keyBinds[vk]) {
+            delete keyBinds[vk];
+            saveBinds();
+            chatPush(`!{44FF44}Бинд снят с клавиши ${keyName}.`);
+        } else {
+            chatPush(`!{FFFF00}На клавишу ${keyName} ничего не привязано.`);
+        }
+        return;
+    }
+
+    // /bind <клавиша> без команд — снять; с командами — привязать
+    if (parts.length < 3) {
+        if (keyBinds[vk]) {
+            delete keyBinds[vk];
+            saveBinds();
+            chatPush(`!{44FF44}Бинд снят с клавиши ${keyName}.`);
+        } else {
+            chatPush('!{FFFF00}Использование: /bind [клавиша] [команды], напр.: /bind a /fly;/givemoney 100');
+        }
+        return;
+    }
+
+    const cmds = parts.slice(2).join(' ').replace(/^\//, '');
+    keyBinds[vk] = cmds;
+    applyBind(vk);
+    saveBinds();
+    chatPush(`!{44FF44}Клавиша ${keyName} привязана: /${cmds.split(';').join('  /')}`);
+});

@@ -169,11 +169,14 @@ const callAimAction = (remoteEvent) => {
     try { if (!!me.vehicle) return; } catch (e) { /* ignore */ }
     try { if (me.health <= 0) return; } catch (e) { /* ignore */ }
     try {
-        if (mp.gui.chat.active === true) return; // печатаем в чате
+        let typing = false;
+        try { typing = !!mp.players.local.isTypingInChat; } catch (e) { typing = false; }
+        if (!typing) { try { typing = mp.gui.chat.active === true; } catch (e2) { typing = false; } }
+        if (typing) return; // печатаем в чате
     } catch (e) { /* ignore */ }
     const t = getAimedPlayer();
     if (!t) {
-        mp.gui.chat.push('!{FF4444}Никто не в прицеле (до 25 м).');
+        chatPush('!{FF4444}Никто не в прицеле (до 25 м).');
         return;
     }
     const cid = t.getVariable && t.getVariable('citizenId');

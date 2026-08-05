@@ -39,26 +39,65 @@ function setLocalModel(gender) {
     } catch (e) { /* ignore */ }
 }
 
+let appliedTattoo = null;
+
+function applyLocalTattoo(t) {
+    try {
+        if (appliedTattoo) {
+            try { mp.players.local.removeTattoo(appliedTattoo.collection, appliedTattoo.overlay); } catch (e) { /* ignore */ }
+            appliedTattoo = null;
+        }
+    } catch (e) { /* ignore */ }
+    if (t && t.collection && t.overlay) {
+        try {
+            mp.players.local.setTattoo(t.collection, t.overlay, 0);
+            appliedTattoo = { collection: t.collection, overlay: t.overlay };
+        } catch (e) { /* ignore */ }
+    }
+}
+
 function applyLocalAppearance(state) {
     const local = mp.players.local;
     const ped = local.handle;
     const hb = state.headBlend;
     local.setHeadBlendData(hb.shapeFirst, hb.shapeSecond, hb.shapeThird, hb.skinFirst, hb.skinSecond, hb.skinThird, hb.shapeMix, hb.skinMix, hb.thirdMix, false);
     // Причёска в GTA V — это компонент 2 (freemode) + её цвет
-    mp.game.ped.setComponentVariation(ped, 2, state.hair.style, 0, 0);
+    mp.game.ped.setComponentVariation(ped, 2, state.hair.style || 0, 0, 0);
     local.setHairColor(state.hair.colorId, state.hair.highlight);
     local.setEyeColor(state.eyes);
-    // Одежда
+
+    // Одежда: все слоты + текстура (цвет/вариант). v может быть числом (старый формат) или {d,t}
     const c = state.clothes || {};
-    mp.game.ped.setComponentVariation(ped, 11, c.top || 0, 0, 0);
-    mp.game.ped.setComponentVariation(ped, 4, c.pants || 0, 0, 0);
-    mp.game.ped.setComponentVariation(ped, 6, c.shoes || 0, 0, 0);
+    const setClothesSlot = (slot, v) => {
+        const d = (v && typeof v === 'object') ? (Number(v.d) || 0) : (Number(v) || 0);
+        const t = (v && typeof v === 'object') ? (Number(v.t) || 0) : 0;
+        try { mp.game.ped.setComponentVariation(ped, slot, d, t, 0); } catch (e) { /* ignore */ }
+    };
+    setClothesSlot(3, c.arms);       // руки / торс
+    setClothesSlot(4, c.pants);      // штаны
+    setClothesSlot(6, c.shoes);      // обувь
+    setClothesSlot(7, c.accessory);  // аксессуары
+    setClothesSlot(8, c.undershirt); // майка / подклад
+    setClothesSlot(11, c.top);       // верх
+
     // Черты лица
     const face = state.face;
     for (let i = 0; i < face.length; i++) {
         const v = Number(face[i]) || 0;
         if (v !== 0) local.setFaceFeature(i, v);
     }
+
+    // Оверлеи головы (борода, брови, макияж, родинки и т.п.); стиль 0 = выкл
+    const ov = state.overlays || [];
+    for (let i = 0; i < 10; i++) {
+        const o = ov[i] || { s: 0, o: 0 };
+        try {
+            mp.game.ped.setPedHeadOverlay(ped, i, Number(o.s) || 0, Math.max(0, Math.min(1, Number(o.o) || 0)));
+        } catch (e) { /* ignore */ }
+    }
+
+    // Тату
+    applyLocalTattoo(state.tattoo || null);
 }
 
 function freezeLocalPlayer(freeze) {
@@ -85,7 +124,7 @@ mp.events.add('char:openCreator', (prefillJson) => {
         charBrowser = null;
         charBrowser = mp.browsers.new('package://charcreator/index.html');
     } catch (e) {
-        mp.gui.chat.push('!{ff0000}Ошибка открытия редактора персонажа');
+        chatPush('!{ff0000}Ошибка открытия редактора персонажа');
         charActive = false;
         try { mp.gui.cursor.show(false, false); } catch (e) { /* ignore */ }
         freezeLocalPlayer(false);
@@ -159,12 +198,13 @@ mp.events.add('char:applyAppearance', (json) => {
     let s;
     try { s = JSON.parse(json); } catch (e) { return; }
     if (!s || typeof s !== 'object') return;
+    const app = s.appearance && typeof s.appearance === 'object' ? s.appearance : s;
     appliedGender = s.gender;
     if (s.gender === 1) setLocalModel(1);
     previewSeq++;
     const mySeq = previewSeq;
     scheduleOnce(() => {
         if (mySeq !== previewSeq) return;
-        try { applyLocalAppearance(s); } catch (e) { /* ignore */ }
+        try { applyLocalAppearance(app); } catch (e) { /* ignore */ }
     }, 900);
 });

@@ -88,11 +88,42 @@ function clampNum(v, min, max) {
 }
 function intClamp(v, min, max) { return Math.round(clampNum(v, min, max)); }
 
-function sanitizeAppearance(a) {
+// Пределы freemode-одежды по полу
+const CLOTH_LIMITS = {
+    male: { top: 281, pants: 108, shoes: 88, undershirt: 32, arms: 48, accessory: 130, hair: 73 },
+    female: { top: 262, pants: 122, shoes: 88, undershirt: 32, arms: 46, accessory: 125, hair: 73 }
+};
+// Максимум стилей головных оверлеев по слотам (0 = выкл)
+const OVERLAY_MAX = [23, 28, 33, 14, 74, 6, 11, 10, 17, 16];
+
+function sanitizeAppearance(a, gender) {
+    const lim = CLOTH_LIMITS[gender === 1 ? 'female' : 'male'];
     const hb = a.headBlend || {};
     const face = Array.isArray(a.face) ? a.face.slice(0, 20).map((v) => clampNum(v, -1, 1)) : [];
     while (face.length < 20) face.push(0);
     const hair = a.hair || {};
+    const cl = a.clothes || {};
+    // item: старый формат (число) или новый ({d, t})
+    const clothItem = (key, max) => {
+        const v = cl[key];
+        if (v && typeof v === 'object') {
+            return { d: intClamp(v.d, 0, max), t: intClamp(v.t, 0, 9) };
+        }
+        return { d: intClamp(v, 0, max), t: 0 };
+    };
+    const overlays = [];
+    const ov = Array.isArray(a.overlays) ? a.overlays : [];
+    for (let i = 0; i < 10; i++) {
+        const o = ov[i] || {};
+        overlays.push({ s: intClamp(o.s, 0, OVERLAY_MAX[i]), o: clampNum(o.o, 0, 1) });
+    }
+    let tattoo = null;
+    if (a.tattoo && typeof a.tattoo === 'object' && a.tattoo.collection && a.tattoo.overlay) {
+        tattoo = {
+            collection: String(a.tattoo.collection).slice(0, 64),
+            overlay: String(a.tattoo.overlay).slice(0, 64)
+        };
+    }
     return {
         headBlend: {
             shapeFirst: intClamp(hb.shapeFirst, 0, 45),
@@ -106,17 +137,22 @@ function sanitizeAppearance(a) {
             thirdMix: clampNum(hb.thirdMix, 0, 1)
         },
         face,
+        overlays,
         hair: {
-            style: intClamp(hair.style, 0, 64),
+            style: intClamp(hair.style, 0, 73),
             colorId: intClamp(hair.colorId, 0, 63),
             highlight: intClamp(hair.highlight, 0, 63)
         },
         eyes: intClamp(a.eyes, 0, 31),
         clothes: {
-            top: intClamp(a.clothes && a.clothes.top, 0, 60),
-            pants: intClamp(a.clothes && a.clothes.pants, 0, 60),
-            shoes: intClamp(a.clothes && a.clothes.shoes, 0, 60)
-        }
+            top: clothItem('top', lim.top),
+            pants: clothItem('pants', lim.pants),
+            shoes: clothItem('shoes', lim.shoes),
+            undershirt: clothItem('undershirt', lim.undershirt),
+            arms: clothItem('arms', lim.arms),
+            accessory: clothItem('accessory', lim.accessory)
+        },
+        tattoo
     };
 }
 
@@ -133,11 +169,26 @@ function applyAppearanceOnce(player, gender, app) {
     // Причёска в GTA V — компонент 2 (freemode) + её цвет
     player.setClothes(2, app.hair.style, 0, 0);
     player.setHairColor(app.hair.colorId, app.hair.highlight);
-    // Одежда
+    // Одежда: все слоты + текстура (v может быть числом — старый формат, или {d,t})
     const c = app.clothes || {};
-    player.setClothes(11, c.top || 0, 0, 0);
-    player.setClothes(4, c.pants || 0, 0, 0);
-    player.setClothes(6, c.shoes || 0, 0, 0);
+    const setSlot = (slot, v) => {
+        if (v && typeof v === 'object') {
+            player.setClothes(slot, Number(v.d) || 0, Number(v.t) || 0, 0);
+        } else {
+            player.setClothes(slot, Number(v) || 0, 0, 0);
+        }
+    };
+    setSlot(3, c.arms);       // руки / торс
+    setSlot(4, c.pants);      // штаны
+    setSlot(6, c.shoes);      // обувь
+    setSlot(7, c.accessory);  // аксессуары
+    setSlot(8, c.undershirt); // майка / подклад
+    setSlot(11, c.top);       // верх
+    // Тату (если API поддерживается сервером, иначе видит только сам игрок на клиенте)
+    const t = app.tattoo;
+    if (t && t.collection && t.overlay) {
+        try { player.setTattoo(t.collection, t.overlay, 0); } catch (e) { /* серверный API может отсутствовать */ }
+    }
 }
 
 function applyAppearance(player, gender, app) {
@@ -186,7 +237,7 @@ mp.events.add('char:create', (player, name, gender, appearanceJson) => {
     }
 
     const genderV = gender === 1 ? 1 : 0;
-    const app = sanitizeAppearance(raw);
+    const app = sanitizeAppearance(raw, genderV);
 
     db.upsertCharacter(player.socialClub, name, genderV, app, (charId) => {
         try {

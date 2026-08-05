@@ -9,7 +9,8 @@ module.exports = function initCuff(deps) {
     const setCuffedState = (target, state) => {
         target.cuffed = state;
         if (state) {
-            try { target.removeAllWeapons(); } catch (e) { /* ignore */ }
+            // Оружие НЕ снимаем: в наручниках его использование блокирует клиент
+            // (флаг 52 + блокировка управления), но из инвентаря оно не пропадает.
         } else {
             // Сняли наручники — ведение прекращаем
             if (target.cuffLeader != null) {
@@ -23,6 +24,21 @@ module.exports = function initCuff(deps) {
         try { target.call('cuff:set', [state]); } catch (e) { /* ignore */ }
     };
 
+    // Экспортируем наружу (посадка в тюрьму снимает наручники через cuffApi)
+    if (deps.api) deps.api.setCuffedState = setCuffedState;
+
+    // Проверка дистанции для чат-команд: цель должна быть рядом (до 30 м),
+    // как и при наведении прицелом (клавиши 6/7)
+    const CMD_CUFF_DIST = 30.0;
+    const distOk = (a, b) => {
+        try {
+            if (!a || !b || typeof a.x !== 'number' || typeof b.x !== 'number') return false;
+            const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+            return Math.sqrt(dx * dx + dy * dy + dz * dz) <= CMD_CUFF_DIST;
+        } catch (e) { return false; }
+    };
+    const distFailMsg = (player) => player.outputChatBox(`!{FF4444}Цель слишком далеко (до ${CMD_CUFF_DIST} м).`);
+
     const cuffHandler = (player, _, argId) => {
         if (!hasPerm(player, 'cuff')) { noPermMsg(player); return; }
         const target = getPlayerById(parseInt(argId, 10));
@@ -30,6 +46,7 @@ module.exports = function initCuff(deps) {
             player.outputChatBox('!{FF4444}Использование: /6 [id] — игрок с таким ID не найден');
             return;
         }
+        if (!distOk(target.position, player.position)) { distFailMsg(player); return; }
         const state = !target.cuffed;
         setCuffedState(target, state);
         if (state) {
@@ -55,6 +72,7 @@ module.exports = function initCuff(deps) {
             player.outputChatBox('!{FF4444}На игроке нет наручников.');
             return;
         }
+        if (target !== player && !distOk(target.position, player.position)) { distFailMsg(player); return; }
         setCuffedState(target, false);
         target.outputChatBox('!{44FF44}С вас сняли наручники.');
         player.outputChatBox(`!{44FF44}Сняты наручники с игрока ${target.citizenId}.`);
@@ -200,6 +218,7 @@ module.exports = function initCuff(deps) {
             player.outputChatBox('!{FF4444}Игрок должен быть в наручниках (6)!');
             return;
         }
+        if (target !== player && !distOk(target.position, player.position)) { distFailMsg(player); return; }
 
         // Ведение отключаем сразу (магнит иначе мешает посадке)
         if (target.cuffLeader === player.id) {
@@ -274,6 +293,15 @@ module.exports = function initCuff(deps) {
     // Смерть задержанного: ведение прекращаем (офицер больше не «привязан»),
     // а наручники НЕ снимаются — после респавна игрок остаётся задержанным
     mp.events.add('playerDeath', (player) => {
+        // Сохраняем инвентарь, чтобы вернуть оружие после респавна (смерть сбрасывает его)
+        try {
+            const list = typeof player.getWeapons === 'function' ? player.getWeapons() : null;
+            if (Array.isArray(list)) {
+                player._savedWeapons = list
+                    .filter((w) => w && w.hash)
+                    .map((w) => [w.hash >>> 0, w.ammo || 999]);
+            }
+        } catch (e) { /* ignore */ }
         if (!player.cuffed) return;
         const officer = player.cuffLeader != null
             ? mp.players.toArray().find((p) => p && p.id === player.cuffLeader)

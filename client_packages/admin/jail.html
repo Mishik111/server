@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Посадка в тюрьму</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            background: transparent;
+            color: #e8e8e8;
+            overflow: hidden;
+        }
+        #panel {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: 460px;
+            background: rgba(20, 25, 40, 0.95);
+            border: 1px solid #3a4a6a;
+            border-radius: 10px;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+        }
+        h2 {
+            font-size: 20px;
+            margin-bottom: 12px;
+            color: #fff;
+            text-align: center;
+        }
+        .sub { font-size: 12px; color: #9aa; text-align: center; margin-bottom: 12px; }
+        label.lbl { display: block; margin: 10px 0 4px; font-size: 13px; color: #aab; }
+        input[type=text], input[type=number] {
+            width: 100%;
+            padding: 8px 10px;
+            font-size: 14px;
+            color: #e8e8e8;
+            background: #10131f;
+            border: 1px solid #2a3450;
+            border-radius: 4px;
+            outline: none;
+        }
+        input:focus { border-color: #4a6ab0; }
+        #quick {
+            margin: 4px 0 8px;
+            max-height: 120px;
+            overflow-y: auto;
+            border: 1px solid #2a3450;
+            border-radius: 4px;
+            background: #10131f;
+        }
+        .prow {
+            padding: 6px 10px;
+            cursor: pointer;
+            font-size: 13px;
+            border-bottom: 1px solid #1c2236;
+            display: flex;
+            justify-content: space-between;
+        }
+        .prow:hover { background: #1c2340; }
+        .prow .st { color: #ffcc4d; }
+        .hint { font-size: 12px; color: #778; margin: 2px 0 0; }
+        .row { display: flex; gap: 8px; margin-top: 14px; }
+        .btn {
+            flex: 1;
+            padding: 9px;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+            color: #fff;
+        }
+        #btn-jail { background: #b3392e; }
+        #btn-jail:hover { background: #cc4436; }
+        #btn-close { background: #2a3450; }
+        #btn-close:hover { background: #37415f; }
+        #err { color: #ff6666; font-size: 13px; min-height: 16px; margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <div id="panel">
+        <h2>Посадка в тюрьму</h2>
+        <div class="sub">Только для игрока в НАРУЧНИКАХ и в РОЗЫСКЕ. Наручники и розыск снимаются после посадки.</div>
+
+        <div id="quick" style="display:none"></div>
+
+        <label class="lbl">ID игрока</label>
+        <input type="number" id="f-id" placeholder="Например: 5" min="1" step="1">
+
+        <label class="lbl">Причина</label>
+        <input type="text" id="f-reason" maxlength="100" placeholder="Нарушение закона">
+
+        <label class="lbl">Время (минуты, больше 50)</label>
+        <input type="number" id="f-min" value="60" min="51" max="1440" step="1">
+
+        <label class="lbl">Комментарий</label>
+        <input type="text" id="f-comment" maxlength="200" placeholder="Необязательно">
+
+        <div id="err"></div>
+
+        <div class="row">
+            <button id="btn-jail" class="btn" type="button">Посадить</button>
+            <button id="btn-close" class="btn" type="button">Отмена (ESC)</button>
+        </div>
+    </div>
+
+    <script src="jail.js"></script>
+</body>
+</html>

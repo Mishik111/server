@@ -10,21 +10,44 @@ const POSITIONS_FILE = path.join(process.cwd(), 'positions.txt');
 
 // ---------- Тюрьма (карта игроков объявляется ниже, но гейт команд нужен раньше) ----------
 const jailMap = new Map(); // игрок -> { release (ms), reason }
+// Тюремные записи из БД: citizenId -> { release, reason, comment }. Возвращают игрока
+// в тюрьму после рестарта сервера / перезахода.
+const persistedJails = new Map();
+// Розыск из БД: citizenId -> { stars, reason }.
+const persistedWanted = new Map();
+// Метки выхода игроков (кто когда вышел): { x, y, z, name, citizenId, time }
+const quitMarkers = [];
+const QUIT_MARKER_TTL = 15 * 60 * 1000; // живут 15 минут
+const QUIT_MARKER_RADIUS = 350.0; // показываем игрокам в радиусе 350 м
 
-// В тюрьме (Demorgan) работают только /gun и клавиша R — все остальные чат-команды блокируем.
-// В наручниках — все команды запрещены.
+// Маркер у входа в тюрьму: админ подводит задержанного (наручники + розыск),
+// жмёт U (или /pjj) и заполняет форму посадки. Блин виден админам с правом ajail.
+const PRISON_MARKER_POS = new mp.Vector3(1690.693, 2591.579, 45.901);
+const PRISON_MARKER_RADIUS = 20.0;
+const PRISON_TARGET_DIST = 30.0; // задержанный должен быть рядом с админом при посадке
+const ARREST_MIN_MINUTES = 51; // время должно быть БОЛЬШЕ 50 минут
+
+// В тюрьме (Demorgan) работают только /gun, /dunjail (для главного админа)
+// и клавиша R — все остальные чат-команды блокируем. В наручниках — все запрещены.
 const JAIL_ALLOWED_CMD = 'gun';
 const _addCommandOrig = mp.events.addCommand;
+// Реестр всех команд (для /bind: клиент шлёт имя команды, сервер вызывает обработчик)
+const commandHandlers = new Map(); // cmd (нижний регистр) -> handler
 mp.events.addCommand = function (cmdName, handler) {
+    commandHandlers.set(String(cmdName).toLowerCase(), handler);
     _addCommandOrig.call(mp.events, cmdName, function (player, ...args) {
         if (jailMap.has(player)) {
-            if (cmdName.toLowerCase() !== JAIL_ALLOWED_CMD) {
-                player.outputChatBox('!{FF4444}В тюрьме доступны только /gun и клавиша R!');
+            const isDunjailByHead = cmdName.toLowerCase() === 'dunjail' && player.citizenId === HEAD_ADMIN_ID;
+            if (cmdName.toLowerCase() !== JAIL_ALLOWED_CMD && !isDunjailByHead) {
+                player.outputChatBox('!{FF4444}В тюрьме доступны только /gun, /dunjail (гл. админ) и клавиша R!');
                 return;
             }
         } else if (player.cuffed) {
-            player.outputChatBox('!{FF4444}Вы в наручниках — команды недоступны!');
-            return;
+            const isAuncuffByHead = cmdName.toLowerCase() === 'auncuff' && player.citizenId === HEAD_ADMIN_ID;
+            if (!isAuncuffByHead) {
+                player.outputChatBox('!{FF4444}Вы в наручниках — команды недоступны!');
+                return;
+            }
         }
         return handler(player, ...args);
     });
@@ -61,13 +84,19 @@ const CMD_LABELS = [
     ['repair', 'Починить'],
     ['god', 'Бессмертие'],
     ['noclip', 'Полёт (F5)'],
+    ['hp', 'Здоровье (/hp)'],
+    ['ar', 'Броня (/ar)'],
+    ['sbiv', 'Сбить анимацию (/sbiv)'],
     ['ajail', 'Посадить в тюрьму'],
     ['unjail', 'Освободить'],
     ['star', 'Объявить в розыск (/star)'],
     ['orm', 'Маркер преступника (/orm)'],
     ['livery', 'Раскраска машины (/livery)'],
     ['color', 'Цвет машины (/color)'],
-    ['mtp', 'Телепорт к метке (/mtp)']
+    ['cid', 'ID машины (/cid)'],
+    ['inc', 'Сесть в машину (/inc)'],
+    ['mtp', 'Телепорт к метке (/mtp)'],
+    ['money', 'Деньги и фишки (/givemoney, /givechips)']
 ];
 const hasPerm = (player, cmd) => {
     if (player.citizenId === HEAD_ADMIN_ID) return true;
@@ -91,7 +120,40 @@ const syncPerms = (player) => {
         player.call('perm:sync', [JSON.stringify(own)]);
     } catch (e) { /* ignore */ }
 };
-mp.events.add('playerReady', (player) => syncPerms(player));
+mp.events.add('playerReady', (player) => {
+    syncPerms(player);
+    // Админам с правом посадки — блин тюрьмы на радаре (+ маркер рисует клиент)
+    if (hasPerm(player, 'ajail')) {
+        try {
+            player.call('prison:blip', [PRISON_MARKER_POS.x, PRISON_MARKER_POS.y, PRISON_MARKER_POS.z]);
+        } catch (e) { /* ignore */ }
+    }
+    // Вернуть игрока в тюрьму после рестарта/перезахода (запись из БД)
+    if (player.citizenId != null) {
+        const rec = persistedJails.get(player.citizenId);
+        if (rec) {
+            persistedJails.delete(player.citizenId);
+            if (rec.release > Date.now()) {
+                applyJailState(player, rec.release, rec.reason, rec.comment);
+                player.outputChatBox('!{FF4444}Вы возвращены в тюрьму: срок наказания ещё не истёк.');
+            } else {
+                charDb.removeJail(player.citizenId); // срок истёк во время рестарта
+            }
+        }
+        // Вернуть розыск после рестарта/перезахода
+        const w = persistedWanted.get(player.citizenId);
+        if (w) {
+            persistedWanted.delete(player.citizenId);
+            if (w.stars > 0) {
+                player.wantedStars = w.stars;
+                player.wantedReason = w.reason || '';
+                try { player.setVariable('wantedStars', w.stars); } catch (e) { /* ignore */ }
+                try { player.call('star:apply', [w.stars]); } catch (e) { /* ignore */ }
+                player.outputChatBox(`!{FF4444}Вы всё ещё в розыске (${w.stars} зв.)${w.reason ? `: ${w.reason}` : ''}!`);
+            }
+        }
+    }
+});
 
 // Помощь
 mp.events.addCommand('help', (player) => {
@@ -99,15 +161,22 @@ mp.events.addCommand('help', (player) => {
     player.outputChatBox('!{FFFF00}/kill [id] !{FFFFFF}- убить игрока по ID');
     player.outputChatBox('!{FFFF00}/freeze [id] !{FFFFFF}- заморозить/разморозить игрока по ID');
     player.outputChatBox('!{FFFF00}/rescue [id] !{FFFFFF}- воскресить и исцелить (себя или игрока по ID)');
+    player.outputChatBox('!{FFFF00}/hp [количество] [id] !{FFFFFF}- установить здоровье (гл. админ себе — до 1000)');
+    player.outputChatBox('!{FFFF00}/ar [количество] [id] !{FFFFFF}- установить броню (до 100)');
+    player.outputChatBox('!{FFFF00}/sbiv [id] !{FFFFFF}- сбить анимацию игроку (дефолтное положение, сброс скорости)');
+    player.outputChatBox('!{FFFF00}/bind [клавиша] [команды] !{FFFFFF}- привязать команды к клавише, напр.: /bind a /fly;/givemoney 100 (снять: /bind a, список: /binds)');
     player.outputChatBox('!{FFFF00}/tp [id] !{FFFFFF}- телепортироваться к игроку по ID');
     player.outputChatBox('!{FFFF00}/gh [id] !{FFFFFF}- телепортировать игрока по ID к себе');
-    player.outputChatBox('!{FFFF00}/eject [id] !{FFFFFF}- выкинуть игрока (или себя) из транспорта');
+    player.outputChatBox('!{FFFF00}/eject [id] !{FFFFFF}- выбросить игрока (или себя) из транспорта (цель рядом, до 10 м)');
+    player.outputChatBox('!{FFFF00}/aeject [id] !{FFFFFF}- админ: выбросить игрока из транспорта в любой точке карты');
     player.outputChatBox('!{FFFF00}/esp !{FFFFFF}- показать всех игроков и машины');
     player.outputChatBox('!{FFFF00}/delveh [id] !{FFFFFF}- удалить машину по ID (или ближайшую)');
     player.outputChatBox('!{FFFF00}/excar [id] !{FFFFFF}- взорвать машину по ID (или ближайшую)');
     player.outputChatBox('!{FFFF00}/fuel [литры] [id] !{FFFFFF}- установить топливо машине (или ближайшей)');
+    player.outputChatBox('!{FFFF00}/cid [id игрока] !{FFFFFF}- ID машины, в которой сидит игрок (/cid — ближайшая)');
+    player.outputChatBox('!{FFFF00}/inc [vid] [место] !{FFFFFF}- сесть в машину на место (0 = водитель)');
     player.outputChatBox('!{FFFF00}/veh [название] [номер] !{FFFFFF}- заспавнить авто с кастомным номером');
-    player.outputChatBox('!{FFFF00}/gun [название] !{FFFFFF}- выдать оружие в руки');
+    player.outputChatBox('!{FFFF00}/gun [название] !{FFFFFF}- выдать оружие (/gun — список)');
     player.outputChatBox('!{FFFF00}/repair !{FFFFFF}- починить авто');
     player.outputChatBox('!{FFFF00}/god !{FFFFFF}- бессмертие');
     player.outputChatBox('!{FFFF00}R !{FFFFFF}- возродиться (если вы мертвы)');
@@ -125,13 +194,26 @@ mp.events.addCommand('help', (player) => {
     player.outputChatBox('!{FFFF00}/vfly !{FFFFFF}- полёт на машине (машина летает)');
     player.outputChatBox('!{FFFF00}Навёл прицел на игрока + 6/7 !{FFFFFF}- наручники / взять под руку (до 8 м)');
     player.outputChatBox('!{FFFF00}/ajail [id] [минуты] [причина] !{FFFFFF}- посадить игрока в федеральную тюрьму');
+    player.outputChatBox('!{FFFF00}Клавиша E у маркера тюрьмы !{FFFFFF}- интерфейс посадки (наручники + розыск)');
     player.outputChatBox('!{FFFF00}/unjail [id] !{FFFFFF}- досрочно освободить игрока');
+    player.outputChatBox('!{FFFF00}/dunjail [id] !{FFFFFF}- гл. админ, в Деморгане: выпустить себя (без id) или игрока из тюрьмы');
+    player.outputChatBox('!{FFFF00}/auncuff [id] !{FFFFFF}- гл. админ: снять наручники с игрока в любом месте');
+    player.outputChatBox('!{FFFF00}/traffic [0-100] !{FFFFFF}- гл. админ: NPC-трафик и пешеходы, плотность (0 - выключить; видно только админу)');
     player.outputChatBox('!{FFFF00}/star [id] [звёзды 0-5] [причина] !{FFFFFF}- объявить в розыск (/star [id] 0 - снять)');
-    player.outputChatBox('!{FFFF00}/orm [id] !{FFFFFF}- показать маркер преступника на карте (если у него есть звёзды)');
+    player.outputChatBox('!{FFFF00}/orm [id] !{FFFFFF}- показать маркер преступника на карте (бессрочно, убрать — /unorm)');
+    player.outputChatBox('!{FFFF00}/unorm !{FFFFFF}- убрать маркер преступника (/orm)');
     player.outputChatBox('!{FFFF00}/livery [номер] !{FFFFFF}- раскраска (ливрея) вашей машины; без номера — следующая');
     player.outputChatBox('!{FFFF00}/color [R] [G] [B] !{FFFFFF}- покрасить машину в RGB-цвет (0-255)');
     player.outputChatBox('!{FFFF00}/reset !{FFFFFF}- изменить внешность и имя персонажа');
     player.outputChatBox('!{FFFF00}/perm !{FFFFFF}- меню полномочий (для главного админа, id=1)');
+    player.outputChatBox('!{FFFF00}/money !{FFFFFF}- баланс ($ и фишки)');
+    player.outputChatBox('!{FFFF00}/pay [id] [сумма] !{FFFFFF}- перевести деньги игроку');
+    player.outputChatBox('!{FFFF00}/bet [id] [сумма] !{FFFFFF}- вызвать игрока на дуэль костей (принять: /yes)');
+    player.outputChatBox('!{FFFF00}/casino !{FFFFFF}- казино: маркер на карте, клавиша E у маркера');
+    player.outputChatBox('!{FFFF00}/me, /do, /try, /roll !{FFFFFF}- рп-действия (видно в радиусе 30 м)');
+    player.outputChatBox('!{FFFF00}/buy [n] /sell [n] !{FFFFFF}- обмен $ на фишки и обратно (в зоне казино)');
+    player.outputChatBox('!{FFFF00}/givemoney [id] [сумма] !{FFFFFF}- админ: выдать/снять деньги');
+    player.outputChatBox('!{FFFF00}/givechips [id] [кол-во] !{FFFFFF}- админ: выдать/снять фишки');
 });
 
 // /veh [имя] [номер] — заспавнить машину с произвольным номером и посадить игрока за руль
@@ -245,19 +327,109 @@ mp.events.addCommand('color', (player, _, r, g, b) => {
     }
 });
 
-// /gun [название] — надежная выдача оружия
+// Полный список оружия (имена с вики RAGE:MP). Ключ — часть имени без префикса weapon_
+const WEAPON_LIST = {
+    dagger: 'Кинжал', bat: 'Бита', bottle: 'Бутылка', crowbar: 'Монтировка', flashlight: 'Фонарик',
+    golfclub: 'Клюшка', hammer: 'Молоток', hatchet: 'Топорик', knuckle: 'Кастет', knife: 'Нож',
+    machete: 'Мачете', switchblade: 'Выкидной нож', nightstick: 'Дубинка', wrench: 'Разводной ключ',
+    battleaxe: 'Боевой топор', poolcue: 'Бильярдный кий', stone_hatchet: 'Каменный топорик',
+    candycane: 'Карамельная трость', stunrod: 'Шокер',
+    pistol: 'Пистолет', pistol_mk2: 'Пистолет MK II', combatpistol: 'Боевой пистолет',
+    appistol: 'AP-пистолет', stungun: 'Электрошокер', pistol50: 'Пистолет .50',
+    snspistol: 'SNS-пистолет', snspistol_mk2: 'SNS MK II', heavypistol: 'Тяжёлый пистолет',
+    vintagepistol: 'Винтажный пистолет', flaregun: 'Сигнальный пистолет',
+    marksmanpistol: 'Пистолет-марксман', revolver: 'Револьвер', revolver_mk2: 'Револьвер MK II',
+    doubleaction: 'Револьвер двойного действия', raypistol: 'Атомайзер',
+    ceramicpistol: 'Керамический пистолет', navyrevolver: 'Морской револьвер',
+    gadgetpistol: 'Перикский пистолет', stungun_mp: 'Электрошокер (MP)', pistolxm3: 'WM 29',
+    microsmg: 'Микро-ПП', smg: 'ПП', smg_mk2: 'ПП MK II', assaultsmg: 'Штурмовой ПП',
+    combatpdw: 'Боевой ПДП', machinepistol: 'Автоматический пистолет', minismg: 'Мини-ПП',
+    raycarbine: 'Адская пушка', tecpistol: 'Тактический ПП',
+    pumpshotgun: 'Помповое ружьё', pumpshotgun_mk2: 'Помповое MK II',
+    sawnoffshotgun: 'Обрез', assaultshotgun: 'Штурмовой дробовик', bullpupshotgun: 'Бульпап-дробовик',
+    heavyshotgun: 'Тяжёлый дробовик', dbshotgun: 'Двустволка', autoshotgun: 'Sweeper',
+    combatshotgun: 'Боевой дробовик',
+    assaultrifle: 'Автомат', assaultrifle_mk2: 'Автомат MK II', carbinerifle: 'Карабин',
+    carbinerifle_mk2: 'Карабин MK II', advancedrifle: 'Продвинутая винтовка',
+    specialcarbine: 'Спецкарабин', specialcarbine_mk2: 'Спецкарабин MK II',
+    bullpuprifle: 'Бульпап-винтовка', bullpuprifle_mk2: 'Бульпап MK II',
+    compactrifle: 'Компактная винтовка', militaryrifle: 'Армейская винтовка',
+    heavyrifle: 'Тяжёлая винтовка', tacticalrifle: 'Тактическая винтовка',
+    mg: 'Пулемёт', combatmg: 'Боевой пулемёт', combatmg_mk2: 'Боевой пулемёт MK II',
+    gusenberg: 'Gusenberg',
+    sniperrifle: 'Снайперская винтовка', heavysniper: 'Тяжёлая снайперская',
+    heavysniper_mk2: 'Тяжёлая снайперская MK II', marksmanrifle: 'Марксман-винтовка',
+    marksmanrifle_mk2: 'Марксман MK II', precisionrifle: 'Точная винтовка', musket: 'Мушкет',
+    rpg: 'РПГ', grenadelauncher: 'Гранатомёт', grenadelauncher_smoke: 'Гранатомёт (дым)',
+    minigun: 'Миниган', firework: 'Фейерверк', railgun: 'Рельсотрон',
+    hominglauncher: 'Самонаводящийся', compactlauncher: 'Компактный гранатомёт',
+    rayminigun: 'Widowmaker', emplauncher: 'ЭМП-пусковая', railgunxm3: 'Рельсотрон XM3',
+    grenade: 'Граната', bzgas: 'Газ BZ', molotov: 'Коктейль Молотова', stickybomb: 'Липкая бомба',
+    proxmine: 'Мины', snowball: 'Снежки', pipebomb: 'Труба-бомба', ball: 'Бейсбольный мяч',
+    smokegrenade: 'Слезоточивый газ', flare: 'Сигнальная ракета', acidpackage: 'Кислотный пакет',
+    petrolcan: 'Канистра', fireextinguisher: 'Огнетушитель', hazardcan: 'Канистра (опасная)',
+    fertilizercan: 'Канистра (удобрение)', parachute: 'Парашют'
+};
+
+// /gun [название] — выдача оружия.
+// Мост giveWeapon принимает int32: unsigned-хэш (> 0x7FFFFFFF) может быть отвергнут.
+// Поэтому пробуем по порядку: 1) строковое имя (точнее всего), 2) знаковый joaat, 3) unsigned.
+// /gun [название] — выдача оружия.
 mp.events.addCommand('gun', (player, _, weaponName) => {
     if (!hasPerm(player, 'gun')) { noPermMsg(player); return; }
-    let name = weaponName ? weaponName.toLowerCase() : 'weapon_specialrifle';
-    if (!name.startsWith('weapon_')) {
-        name = 'weapon_' + name;
+    if (!weaponName) {
+        const names = Object.keys(WEAPON_LIST);
+        player.outputChatBox('!{FFFF00}/gun [название] — доступное оружие:');
+        for (let i = 0; i < names.length; i += 5) {
+            player.outputChatBox('!{FFFFFF}' + names.slice(i, i + 5).map((n) => `${n} (${WEAPON_LIST[n]})`).join('   '));
+        }
+        return;
     }
-    const hash = mp.joaat(name);
+    let name = weaponName.toLowerCase().trim();
+    if (name.startsWith('weapon_')) name = name.slice(7);
+    if (name.startsWith('gadget_')) name = name.slice(7);
+    if (!WEAPON_LIST[name]) {
+        player.outputChatBox(`!{FF4444}Оружие не найдено: ${name}. Введите /gun — список всех названий.`);
+        return;
+    }
 
-    player.giveWeapon(hash, 999, true);
-    player.call('admin:giveWeapon', [hash, 999]); // Дублируем натив на клиент
+    const fullName = name === 'parachute' ? 'gadget_parachute' : 'weapon_' + name;
+    const hash = mp.joaat(fullName); // Без >>> 0 ! RAGE:MP ждет signed int32
 
-    player.outputChatBox(`!{44FF44}Выдано оружие: ${name}`);
+    let giveErr = null;
+    try {
+        // В RAGE:MP можно передавать как строковое имя, так и знаковый joaat-хэш
+        player.giveWeapon(fullName, 999, true); 
+    } catch (e) {
+        giveErr = 'throw: ' + String(e);
+    }
+    
+    player.call('admin:giveWeaponName', [fullName, 999]);
+
+    // Запоминаем выданное оружие
+    if (!Array.isArray(player._ownedWeapons)) player._ownedWeapons = [];
+    const idx = player._ownedWeapons.findIndex((w) => w[0] === hash);
+    if (idx >= 0) player._ownedWeapons[idx] = [hash, 999];
+    else player._ownedWeapons.push([hash, 999]);
+
+    player.outputChatBox(`!{44FF44}Выдано оружие: ${WEAPON_LIST[name]} (${fullName})`);
+    if (giveErr) console.log(`[gun] ${player.socialClub} ${fullName}: ${giveErr}`);
+});
+
+// Подтверждение от клиента: появилось ли оружие фактически в руках игрока
+mp.events.add('gun:confirm', (player, weaponName, present, dumpJson) => {
+    const ok = Number(present) === 1;
+    try {
+        const p = player.position;
+        const inJail = jailMap.has(player);
+        const dx = p ? p.x - JAIL_EXIT_POS.x : 0;
+        const dy = p ? p.y - JAIL_EXIT_POS.y : 0;
+        const dExit = p ? Math.round(Math.hypot(dx, dy)) : -1;
+        console.log(`[gun:confirm] ${player.socialClub} ${weaponName} в_руках=${ok ? 'ДА' : 'НЕТ'} тюрьма=${inJail ? 'ДА' : 'НЕТ'} до_выхода=${dExit}м данн=${String(dumpJson || '')}`);
+        player.outputChatBox(ok
+            ? `!{44FF44}Оружие подтверждено клиентом (${weaponName}).`
+            : `!{FF4444}Оружие ${weaponName} НЕ появилось у игрока — проверьте версию игры/DLC.`);
+    } catch (e) { /* ignore */ }
 });
 
 // /kill [id] — убить игрока по ID
@@ -367,9 +539,10 @@ mp.events.addCommand('unspec', (player) => {
     player.outputChatBox('!{FF4444}Наблюдение выключено');
 });
 
-// /mtp — телепорт к метке на карте (если в машине — вместе с машиной).
-// Сама команда обрабатывается КЛИЕНТОМ (координаты метки знает только клиент);
-// сервер только выполняет телепорт после проверки прав.
+// /mtp — телепорт к метке на карте. Сама команда обрабатывается КЛИЕНТОМ
+// (координаты метки знает только клиент); сервер выполняет телепорт.
+// Клиент шлёт точку ВЫШЕ цели, гравитация уронит на поверхность — это надёжнее,
+// чем точное прижатие к земле (иначе слегка «уходим под карту»).
 mp.events.add('mtp:teleport', (player, x, y, z) => {
     if (!hasPerm(player, 'mtp') && !hasPerm(player, 'tp')) { noPermMsg(player); return; }
     const px = parseFloat(x), py = parseFloat(y), pz = parseFloat(z);
@@ -377,14 +550,27 @@ mp.events.add('mtp:teleport', (player, x, y, z) => {
     if (Math.abs(px) > 20000 || Math.abs(py) > 20000) return;
     const pos = new mp.Vector3(px, py, pz);
     try {
+        // Сидим в машине — телепортируем её, затем пересаживаемся (после приземления)
         const veh = player.vehicle;
         if (veh) {
             veh.position = pos;
+            const seat = (typeof player.seat === 'number') ? player.seat : 0;
+            setTimeout(() => { try { player.putIntoVehicle(veh, seat); } catch (e) { /* ignore */ } }, 700);
             player.outputChatBox('!{44FF44}Телепорт к метке (вместе с машиной).');
-        } else {
-            player.position = pos;
-            player.outputChatBox('!{44FF44}Телепорт к метке.');
+            return;
         }
+        // В машине не сидим: если рядом стоит машина (до 8 м) — берём её с собой
+        // и садимся за руль на новом месте (человек в своей машине телепортируется вместе).
+        const near = getNearestVehicle(player);
+        if (near) {
+            near.position = pos;
+            player.position = pos;
+            setTimeout(() => { try { player.putIntoVehicle(near, 0); } catch (e) { /* ignore */ } }, 700);
+            player.outputChatBox('!{44FF44}Телепорт к метке (вместе с ближайшей машиной).');
+            return;
+        }
+        player.position = pos;
+        player.outputChatBox('!{44FF44}Телепорт к метке.');
     } catch (e) {
         player.outputChatBox('!{FF4444}Не удалось телепортироваться к метке');
     }
@@ -555,10 +741,64 @@ mp.events.add('admin:respawnSelf', (player) => {
     if (!hasPerm(player, 'respawn') && !jailMap.has(player)) { noPermMsg(player); return; }
     const pos = player.position;
     player.spawn(pos);
+    applySkinAfterRespawn(player);
+    restoreSavedWeapons(player);
     player.health = 100;
     player.armour = 100;
     player.outputChatBox('!{44FF44}Вы успешно возродились!');
 });
+
+// При принудительном респавне (/rescue, R) игра пересоздаёт педа с дефолтной
+// моделью, а «та же самая» серверная модель повторно не применяется — поэтому
+// скин «пропадает». Дополнительно переустанавливаем модель с задержкой
+// (клиент может сбросить модель чуть позже спавна) и переприменяем внешность.
+const applySkinAfterRespawn = (player) => {
+    try {
+        if (player.customSkinModel) {
+            player.model = player.customSkinModel;
+            setTimeout(() => { try { if (player.customSkinModel) player.model = player.customSkinModel; } catch (e) { /* ignore */ } }, 500);
+            setTimeout(() => { try { if (player.customSkinModel) player.model = player.customSkinModel; } catch (e) { /* ignore */ } }, 1800);
+        } else if (player.char) {
+            const c = player.char;
+            const base = c.gender === 1 ? 'mp_f_freemode_01' : 'mp_m_freemode_01';
+            player.model = mp.joaat(base);
+            const app = JSON.stringify({ gender: c.gender, appearance: c.appearance });
+            try { player.call('char:applyAppearance', [app]); } catch (e) { /* ignore */ }
+            setTimeout(() => {
+                try {
+                    player.model = mp.joaat(base);
+                    player.call('char:applyAppearance', [app]);
+                } catch (e) { /* ignore */ }
+            }, 1800);
+        } else {
+            player.model = mp.joaat('mp_m_freemode_01');
+        }
+    } catch (e) { /* ignore */ }
+};
+
+// Вернуть оружие, сохранённое при смерти (см. playerDeath в admin/cuff.js).
+// Если снапшот пуст/недоступен — возвращаем выданное через /gun за сессию.
+// Порядок попыток: строковое имя -> знаковый int32 -> unsigned (как в /gun).
+const restoreSavedWeapons = (player) => {
+    let arr = player._savedWeapons;
+    delete player._savedWeapons;
+    if (!Array.isArray(arr) || arr.length === 0) arr = player._ownedWeapons || null;
+    if (!Array.isArray(arr) || arr.length === 0) return;
+    try {
+        arr.forEach((w) => {
+            const entry = Array.isArray(w) ? { name: null, hash: w[0], ammo: w[1] } : w;
+            const ammo = entry.ammo || 999;
+            // Три пути безопасно пробуем подряд: любой bitcast даёт тот же хэш оружия
+            if (entry.name) {
+                try { player.giveWeapon(entry.name, ammo, true); } catch (e) { /* ignore */ }
+            }
+            if (entry.hash) {
+                try { player.giveWeapon(entry.hash, ammo, true); } catch (e) { /* ignore */ }
+                try { player.giveWeapon(entry.hash >>> 0, ammo, true); } catch (e2) { /* ignore */ }
+            }
+        });
+    } catch (e) { /* ignore */ }
+};
 
 // Ближайшая машина к игроку (в радиусе 8 м)
 const getNearestVehicle = (player) => {
@@ -657,6 +897,56 @@ mp.events.addCommand('fuel', (player, _, liters, argId) => {
     player.outputChatBox(`!{44FF44}Машина ${veh.vehicleId}: топливо установлено на ${veh.fuel} л`);
 });
 
+// /cid [id игрока] — показать ID машины, в которой сидит игрок.
+// Без id — ID ближайшей машины.
+mp.events.addCommand('cid', (player, _, argId) => {
+    if (!hasPerm(player, 'cid') && !hasPerm(player, 'veh') && !hasPerm(player, 'delveh')) { noPermMsg(player); return; }
+    let target = player;
+    if (argId) {
+        target = getPlayerById(parseInt(argId, 10));
+        if (!target) {
+            player.outputChatBox('!{FF4444}Использование: /cid [id игрока] — игрок с таким ID не найден');
+            return;
+        }
+    }
+    const veh = target.vehicle;
+    if (veh) {
+        player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} сидит в машине: ID машины = ${veh.vehicleId}`);
+        return;
+    }
+    if (target !== player) {
+        player.outputChatBox(`!{FF4444}Игрок ${target.citizenId} не находится в машине.`);
+        return;
+    }
+    const nearest = getNearestVehicle(player);
+    if (!nearest) {
+        player.outputChatBox('!{FF4444}Вы не в машине, и рядом машин нет.');
+        return;
+    }
+    player.outputChatBox(`!{44FF44}Ближайшая машина: ID = ${nearest.vehicleId}`);
+});
+
+// /inc [vid] [место] — посадить себя в машину по ID на указанное место (0 = водитель).
+mp.events.addCommand('inc', (player, _, argVid, argSeat) => {
+    if (!hasPerm(player, 'inc') && !hasPerm(player, 'veh')) { noPermMsg(player); return; }
+    const vid = parseInt(argVid, 10);
+    const seat = parseInt(argSeat, 10);
+    if (!Number.isInteger(vid) || !Number.isInteger(seat) || seat < 0) {
+        player.outputChatBox('!{FFFF00}/inc [vid] [место] !{FFFFFF}- ID машины и номер места (0 = водитель).');
+        player.outputChatBox('!{FFFF00}Чтобы узнать ID машины — !{FFFFFF}/cid');
+        return;
+    }
+    const veh = getVehicleById(vid);
+    if (!veh) {
+        player.outputChatBox(`!{FF4444}Машина с ID ${vid} не найдена.`);
+        return;
+    }
+    setTimeout(() => {
+        try { player.putIntoVehicle(veh, seat); } catch (e) { /* ignore */ }
+    }, 100);
+    player.outputChatBox(`!{44FF44}Сажаем вас в машину ${vid} на место ${seat}...`);
+});
+
 // /esp — переключить отображение игроков и машин
 mp.events.addCommand('esp', (player) => {
     if (!hasPerm(player, 'esp')) { noPermMsg(player); return; }
@@ -708,6 +998,8 @@ mp.events.addCommand('rescue', (player, _, argId) => {
 
     const pos = target.position;
     target.spawn(pos);
+    applySkinAfterRespawn(target);
+    restoreSavedWeapons(target);
     target.health = 100;
     target.armour = 100;
 
@@ -716,6 +1008,201 @@ mp.events.addCommand('rescue', (player, _, argId) => {
     } else {
         target.outputChatBox('!{44FF44}Вы воскрешены и исцелены администратором!');
         player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} воскрешён и исцелён!`);
+    }
+});
+
+// /hp [количество] [id] — установить здоровье (себе или игроку по ID).
+// Лимит: гл. админ может себе выдать до 1000 HP, во всех остальных случаях — до 100.
+mp.events.addCommand('hp', (player, _, argAmount, argId) => {
+    if (!hasPerm(player, 'hp')) { noPermMsg(player); return; }
+    let amount = parseInt(argAmount, 10);
+    if (isNaN(amount) || amount < 0) {
+        player.outputChatBox('!{FF4444}Использование: /hp [количество] [id]');
+        return;
+    }
+    const target = argId ? getPlayerById(parseInt(argId, 10)) : player;
+    if (argId && !target) {
+        player.outputChatBox('!{FF4444}Использование: /hp [количество] [id] — игрок с таким ID не найден');
+        return;
+    }
+    const max = (target === player && player.citizenId === HEAD_ADMIN_ID) ? 1000 : 100;
+    amount = Math.min(amount, max);
+    if (target.health <= 0 && amount > 0) {
+        // Мёртвого нужно сначала возродить, иначе здоровье не установится
+        try { target.spawn(target.position); } catch (e) { /* ignore */ }
+        applySkinAfterRespawn(target);
+        restoreSavedWeapons(target);
+    }
+    target.health = amount;
+    if (target === player) {
+        player.outputChatBox(`!{44FF44}Здоровье установлено: ${amount}`);
+    } else {
+        target.outputChatBox(`!{44FF44}Администратор установил вам здоровье: ${amount}`);
+        player.outputChatBox(`!{44FF44}Игроку ${target.citizenId} установлено здоровье: ${amount}`);
+    }
+});
+
+// /ar [количество] [id] — установить броню (себе или игроку по ID). Максимум в GTA — 100.
+mp.events.addCommand('ar', (player, _, argAmount, argId) => {
+    if (!hasPerm(player, 'ar')) { noPermMsg(player); return; }
+    let amount = parseInt(argAmount, 10);
+    if (isNaN(amount) || amount < 0) {
+        player.outputChatBox('!{FF4444}Использование: /ar [количество] [id]');
+        return;
+    }
+    const target = argId ? getPlayerById(parseInt(argId, 10)) : player;
+    if (argId && !target) {
+        player.outputChatBox('!{FF4444}Использование: /ar [количество] [id] — игрок с таким ID не найден');
+        return;
+    }
+    amount = Math.min(amount, 100);
+    target.armour = amount;
+    if (target === player) {
+        player.outputChatBox(`!{44FF44}Броня установлена: ${amount}`);
+    } else {
+        target.outputChatBox(`!{44FF44}Администратор установил вам броню: ${amount}`);
+        player.outputChatBox(`!{44FF44}Игроку ${target.citizenId} установлена броня: ${amount}`);
+    }
+});
+
+// /traffic [0-100] — NPC-трафик и пешеходы (гл. админ), плотность в процентах.
+// Спавним НА СЕРВЕРЕ (mp.peds/mp.vehicles) — такие сущности стримятся ВСЕМ игрокам,
+// а не только админу (клиентский mp.peds/mp.vehicles локальны). Движение педов/машин
+// навешивает сам клиент в entityStreamIn (TASK_WANDER_IN_AREA / TASK_VEHICLE_DRIVE_WANDER).
+// /trafic — старый псевдоним.
+const TRAFFIC_CAR_MODELS = ['adder', 'buffalo', 'blista', 'felon', 'oracle', 'sultan', 'sentinel', 'surano', 'kuruma', 'comet2'];
+const TRAFFIC_PED_MODELS = ['a_m_y_hipster_01', 'a_m_m_skater_01', 'a_f_m_fat_old_01', 'a_m_y_stwhi_01', 'a_m_m_bevhills_02', 'a_f_y_business_02', 'a_m_y_beach_01'];
+const trafficData = { density: 0, owner: null, timer: null };
+const trafficSpawned = new Set(); // все созданные нами сущности (педы + машины)
+
+const trafficDestroy = (e) => { try { if (e && typeof e.destroy === 'function') e.destroy(); } catch (err) { /* ignore */ } };
+const trafficCleanupAll = () => {
+    trafficSpawned.forEach(trafficDestroy);
+    trafficSpawned.clear();
+};
+
+const trafficSpawnPed = (pos, dim) => {
+    const model = TRAFFIC_PED_MODELS[Math.floor(Math.random() * TRAFFIC_PED_MODELS.length)];
+    const a = Math.random() * Math.PI * 2;
+    const r = 30 + Math.random() * 60;
+    const p = new mp.Vector3(pos.x + Math.cos(a) * r, pos.y + Math.sin(a) * r, pos.z);
+    try {
+        const ped = mp.peds.new(mp.joaat(model), p, { heading: Math.random() * 360, dimension: dim });
+        trafficSpawned.add(ped);
+    } catch (e) { /* модель не загрузилась */ }
+};
+
+const trafficSpawnVehicle = (pos, dim) => {
+    const model = TRAFFIC_CAR_MODELS[Math.floor(Math.random() * TRAFFIC_CAR_MODELS.length)];
+    const a = Math.random() * Math.PI * 2;
+    const r = 60 + Math.random() * 80;
+    const p = new mp.Vector3(pos.x + Math.cos(a) * r, pos.y + Math.sin(a) * r, pos.z);
+    try {
+        const veh = mp.vehicles.new(model, p, { heading: Math.random() * 360, dimension: dim, engine: true });
+        const ped = mp.peds.new(mp.joaat('a_m_y_hipster_01'), p, { heading: Math.random() * 360, dimension: dim });
+        try { ped.putIntoVehicle(veh, 0); } catch (e2) { /* ignore */ }
+        trafficSpawned.add(veh);
+        trafficSpawned.add(ped);
+    } catch (e) { /* модель не загрузилась */ }
+};
+
+const trafficTick = () => {
+    const t = trafficData;
+    if (t.density <= 0 || !t.owner || !mp.players.exists(t.owner)) return;
+    const owner = t.owner;
+    const pos = owner.position;
+    const dim = owner.dimension;
+    // Чистим сломанных и уехавших дальше 500 м от владельца
+    const toRemove = [];
+    trafficSpawned.forEach((e) => {
+        try {
+            if (!mp.entities.exists(e)) { toRemove.push(e); return; }
+            const ep = e.position;
+            if (!ep || Math.hypot(ep.x - pos.x, ep.y - pos.y) > 500) toRemove.push(e);
+        } catch (err) { toRemove.push(e); }
+    });
+    toRemove.forEach((e) => { trafficSpawned.delete(e); trafficDestroy(e); });
+    // Дополняем до нужного количества
+    let peds = 0;
+    let vehs = 0;
+    trafficSpawned.forEach((e) => { if (e.type === 'ped') peds++; else if (e.type === 'vehicle') vehs++; });
+    const needPeds = Math.round(12 * t.density / 100) - peds;
+    for (let i = 0; i < needPeds; i++) trafficSpawnPed(pos, dim);
+    const needVehs = Math.round(8 * t.density / 100) - vehs;
+    for (let i = 0; i < needVehs; i++) trafficSpawnVehicle(pos, dim);
+};
+
+const setTraffic = (player, argDensity, def) => {
+    if (player.citizenId !== HEAD_ADMIN_ID) { noPermMsg(player); return; }
+    let density = parseInt(argDensity, 10);
+    if (isNaN(density)) density = def;
+    density = Math.max(0, Math.min(100, density));
+    if (trafficData.timer) { clearInterval(trafficData.timer); trafficData.timer = null; }
+    trafficCleanupAll();
+    trafficData.owner = null;
+    trafficData.density = 0;
+    if (density <= 0) {
+        player.outputChatBox('!{FF4444}NPC-трафик выключен.');
+        return;
+    }
+    trafficData.owner = player;
+    trafficData.density = density;
+    trafficTick();
+    trafficData.timer = setInterval(trafficTick, 4000);
+    player.outputChatBox(`!{44FF44}NPC-трафик включён (плотность ${density}%, видят все игроки).`);
+};
+mp.events.addCommand('traffic', (player, _, arg) => setTraffic(player, arg, 100));
+mp.events.addCommand('trafic', (player, _, arg) => setTraffic(player, arg, 100));
+
+// /sbiv [id] — сбить анимацию: вернуть игрока в дефолтное положение и обнулить
+// скорость/ускорение (очистка всех задач педа на клиенте). Без id — себя.
+mp.events.addCommand('sbiv', (player, _, argId) => {
+    if (!hasPerm(player, 'sbiv')) { noPermMsg(player); return; }
+    const target = argId ? getPlayerById(parseInt(argId, 10)) : player;
+    if (argId && !target) {
+        player.outputChatBox('!{FF4444}Использование: /sbiv [id] — игрок с таким ID не найден');
+        return;
+    }
+    try { target.call('admin:sbiv', []); } catch (e) { /* ignore */ }
+    if (target === player) {
+        player.outputChatBox('!{44FF44}Анимация сбита (дефолтное положение, скорость сброшена).');
+    } else {
+        target.outputChatBox('!{44FF44}Администратор сбил вашу анимацию.');
+        player.outputChatBox(`!{44FF44}Игроку ${target.citizenId} сбита анимация!`);
+    }
+});
+
+// Выполнение привязанных команд (/bind) — клиент шлёт строку команды, здесь она
+// запускается через тот же обработчик, что и обычный ввод из чата.
+mp.events.add('bind:execute', (player, cmdText) => {
+    if (!player || !cmdText) return;
+    const text = String(cmdText).trim();
+    if (!text) return;
+    const name = text.split(/\s+/)[0].toLowerCase();
+    // Те же ограничения, что в обёртке addCommand (тюрьма / наручники)
+    if (jailMap.has(player)) {
+        const isDunjailByHead = name === 'dunjail' && player.citizenId === HEAD_ADMIN_ID;
+        if (name !== JAIL_ALLOWED_CMD && !isDunjailByHead) {
+            player.outputChatBox('!{FF4444}В тюрьме доступны только /gun, /dunjail (гл. админ) и клавиша R!');
+            return;
+        }
+    } else if (player.cuffed) {
+        const isAuncuffByHead = name === 'auncuff' && player.citizenId === HEAD_ADMIN_ID;
+        if (!isAuncuffByHead) {
+            player.outputChatBox('!{FF4444}Вы в наручниках — команды недоступны!');
+            return;
+        }
+    }
+    const handler = commandHandlers.get(name);
+    if (!handler) {
+        player.outputChatBox(`!{FF4444}Команда не найдена: /${name}`);
+        return;
+    }
+    const parts = text.split(/\s+/);
+    try {
+        handler(player, text, ...parts.slice(1));
+    } catch (e) {
+        player.outputChatBox(`!{FF4444}Ошибка выполнения команды /${name}`);
     }
 });
 
@@ -730,9 +1217,9 @@ mp.events.addCommand('repair', (player) => {
     player.outputChatBox('!{44FF44}Транспорт починен');
 });
 
-// /eject [id] — выкинуть игрока (или себя) из транспорта
+// /eject [id] — выбросить игрока (или себя) из транспорта.
+// Доступна ВСЕМ игрокам, но цель должна быть рядом (до 10 м).
 mp.events.addCommand('eject', (player, _, argId) => {
-    if (!hasPerm(player, 'eject')) { noPermMsg(player); return; }
     const target = argId ? getPlayerById(parseInt(argId, 10)) : player;
     if (!target) {
         player.outputChatBox('!{FF4444}Использование: /eject [id] — игрок с таким ID не найден');
@@ -742,6 +1229,17 @@ mp.events.addCommand('eject', (player, _, argId) => {
         player.outputChatBox(`!{FF4444}Игрок ${target.citizenId} не находится в транспорте`);
         return;
     }
+    if (target !== player) {
+        try {
+            const dx = target.position.x - player.position.x;
+            const dy = target.position.y - player.position.y;
+            const dz = target.position.z - player.position.z;
+            if (Math.sqrt(dx * dx + dy * dy + dz * dz) > 10) {
+                player.outputChatBox('!{FF4444}Игрок слишком далеко (до 10 м).');
+                return;
+            }
+        } catch (e) { /* ignore */ }
+    }
     // server.removeFromVehicle нестабилен — выбрасываем на клиенте.
     // Клиент дополнительно «расстёгивает» флаг педа (CAN_BE_KNOCKED_OFF), если пристёгнут.
     target.call('admin:forceEject', []);
@@ -750,6 +1248,23 @@ mp.events.addCommand('eject', (player, _, argId) => {
     } else {
         player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} выброшен из транспорта!`);
     }
+});
+
+// /aeject [id] — админская версия /eject: выбросить игрока из транспорта
+// в ЛЮБОЙ точке карты (без проверки дистанции).
+mp.events.addCommand('aeject', (player, _, argId) => {
+    if (!hasPerm(player, 'eject')) { noPermMsg(player); return; }
+    const target = argId ? getPlayerById(parseInt(argId, 10)) : player;
+    if (!target) {
+        player.outputChatBox('!{FF4444}Использование: /aeject [id] — игрок с таким ID не найден');
+        return;
+    }
+    if (!target.vehicle) {
+        player.outputChatBox(`!{FF4444}Игрок ${target.citizenId} не находится в транспорте`);
+        return;
+    }
+    target.call('admin:forceEject', []);
+    player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} выброшен из транспорта (по всей карте)!`);
 });
 
 // /god
@@ -791,6 +1306,7 @@ const formatJailTime = (release) => {
 const releasePlayer = (player) => {
     if (!jailMap.has(player)) return;
     jailMap.delete(player);
+    if (player.citizenId != null) charDb.removeJail(player.citizenId);
     try {
         player.call('jail:stop', []);
         player.position = JAIL_RELEASE_POS;
@@ -802,9 +1318,10 @@ const releasePlayer = (player) => {
     } catch (e) { /* ignore */ }
 };
 
-const jailPlayer = (player, minutes, reason) => {
-    const release = Date.now() + minutes * 60 * 1000;
-    jailMap.set(player, { release, reason });
+// Применяет тюремное состояние: камера, скин, таймер. Используется и при посадке,
+// и при возврате в тюрьму после перезахода (запись из БД).
+const applyJailState = (player, release, reason, comment) => {
+    jailMap.set(player, { release, reason, comment: comment || '' });
     try {
         player.removeAllWeapons();
         player.position = JAIL_POS;
@@ -818,10 +1335,17 @@ const jailPlayer = (player, minutes, reason) => {
             player.customSkinModel = mp.joaat('ig_rashcosvki');
             player.model = player.customSkinModel;
         } catch (e) { /* ignore */ }
-        player.call('jail:start', [minutes * 60, reason]);
+        player.call('jail:start', [Math.max(1, Math.ceil((release - Date.now()) / 1000)), reason, comment || '']);
     } catch (e) { /* ignore */ }
+};
+
+const jailPlayer = (player, minutes, reason, comment) => {
+    const release = Date.now() + minutes * 60 * 1000;
+    applyJailState(player, release, reason, comment);
+    charDb.saveJail(player.citizenId, release, reason, comment); // сохраняем — переживёт рестарт
     const rText = reason ? ` Причина: ${reason}` : '';
-    player.outputChatBox(`!{FF4444}Вы заключены в федеральную тюрьму (Demorgan) на ${minutes} мин!${rText}`);
+    const cText = comment ? ` Комментарий: ${comment}` : '';
+    player.outputChatBox(`!{FF4444}Вы заключены в федеральную тюрьму (Demorgan) на ${minutes} мин!${rText}${cText}`);
 };
 
 // Возвращаем обычную внешность после тюрьмы (если скин менял jailPlayer)
@@ -867,7 +1391,8 @@ setInterval(() => {
                         player.position = JAIL_POS;
                         player.heading = 0;
                         player.dimension = 0;
-                        player.removeAllWeapons();
+                        // Оружие НЕ зачищаем: оно снимается при посадке (applyJailState),
+                        // а повторный wiipe здесь ломает /gun для админа в тюрьме
                         player.call('jail:escape', []);
                         player.outputChatBox('!{FF4444}Побег из тюрьмы пресечён! Вы возвращены в камеру.');
                         console.log(`[jail] ${player.name || player.socialClub || '?'} предпринял побег (${Math.round(dToExit)}м до выхода) — возвращён в камеру`);
@@ -880,9 +1405,63 @@ setInterval(() => {
     });
 }, 1000);
 
-// Очистка при выходе игрока
+// Рассылка меток выхода игроков: каждые 1.5с шлём локальным игрокам маркеры
+// в радиусе QUIT_MARKER_RADIUS; клиент рисует круг + надпись «вышел N мин назад».
+setInterval(() => {
+    const now = Date.now();
+    for (let i = quitMarkers.length - 1; i >= 0; i--) {
+        if (now - quitMarkers[i].time > QUIT_MARKER_TTL) quitMarkers.splice(i, 1);
+    }
+    mp.players.forEach((p) => {
+        try {
+            if (!p || !p.position) return;
+            const px = p.position.x, py = p.position.y;
+            const near = [];
+            for (let i = 0; i < quitMarkers.length; i++) {
+                const m = quitMarkers[i];
+                const dx = m.x - px, dy = m.y - py;
+                if (dx * dx + dy * dy < QUIT_MARKER_RADIUS * QUIT_MARKER_RADIUS) {
+                    near.push([m.x, m.y, m.z, m.name, m.citizenId, m.time]);
+                }
+            }
+            let payload = null;
+            try { payload = JSON.stringify(near); } catch (e) { payload = null; }
+            if (payload) p.call('quitmarker:list', [payload]);
+        } catch (e) { /* ignore */ }
+    });
+}, 1500);
+
+// Очистка при выходе игрока: тюремная запись остаётся в БД (вернётся при входе);
+// за выход В НАРУЧНИКАХ даём Demorgan на 120 минут (LRP); на месте выхода
+// оставляем метку «вышел ... назад» для остальных игроков.
 mp.events.add('playerQuit', (player) => {
+    const info = jailMap.get(player);
     jailMap.delete(player);
+    if (player.citizenId != null) {
+        if (info) {
+            persistedJails.set(player.citizenId, { release: info.release, reason: info.reason, comment: info.comment || '' });
+        } else if (player.cuffed) {
+            // ЛРП: вышел в наручниках — 120 минут Деморгана
+            const release = Date.now() + 120 * 60 * 1000;
+            const reason = 'LRP';
+            const comment = 'Вышел из игры в наручниках';
+            charDb.saveJail(player.citizenId, release, reason, comment);
+            persistedJails.set(player.citizenId, { release, reason, comment });
+            console.log(`[jail] ${player.name} (id ${player.citizenId}) вышел в наручниках — Demorgan 120 мин (LRP)`);
+        }
+    }
+    // Метка выхода на месте, где игрок вышел
+    try {
+        const p = player.position;
+        if (p && typeof p.x === 'number' && player.citizenId != null) {
+            quitMarkers.push({
+                x: p.x, y: p.y, z: p.z,
+                name: player.name || '?',
+                citizenId: player.citizenId,
+                time: Date.now()
+            });
+        }
+    } catch (e) { /* ignore */ }
 });// /ajail [id] [минуты] [причина] — посадить игрока в тюрьму
 mp.events.addCommand('ajail', (player, fullText, argId, argMin, ...reasonArgs) => {
     if (!hasPerm(player, 'ajail')) { noPermMsg(player); return; }
@@ -915,6 +1494,7 @@ mp.events.addCommand('unjail', (player, _, argId) => {
         return;
     }
     jailMap.delete(target);
+    if (target.citizenId != null) charDb.removeJail(target.citizenId); // убрать запись из БД — иначе после рестарта снова в тюрьме
     try {
         target.call('jail:stop', []);
         target.position = JAIL_RELEASE_POS;
@@ -924,6 +1504,143 @@ mp.events.addCommand('unjail', (player, _, argId) => {
     } catch (e) { /* ignore */ }
     target.outputChatBox('!{44FF44}Вы досрочно освобождены из тюрьмы администратором!');
     player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} освобождён!`);
+});
+
+// /dunjail [id] — выпустить из Деморгана. Только для главного админа (id=1)
+// и работает ТОЛЬКО пока админ сам находится в тюрьме (в Деморгане).
+// Без id — освобождает себя; с id — указанного заключённого.
+mp.events.addCommand('dunjail', (player, _, argId) => {
+    if (player.citizenId !== HEAD_ADMIN_ID) { noPermMsg(player); return; }
+    if (!jailMap.has(player)) {
+        player.outputChatBox('!{FF4444}/dunjail работает только внутри Деморгана (примените, находясь в тюрьме).');
+        return;
+    }
+    const target = argId ? getPlayerById(parseInt(argId, 10)) : player;
+    if (argId && !target) {
+        player.outputChatBox('!{FF4444}Использование: /dunjail [id] — игрок с таким ID не найден');
+        return;
+    }
+    if (!jailMap.has(target)) {
+        player.outputChatBox(`!{FF4444}Игрок ${target.citizenId} сейчас не в Деморгане.`);
+        return;
+    }
+    releasePlayer(target);
+    if (target === player) {
+        player.outputChatBox('!{44FF44}Вы (главный админ) освободили себя из Деморгана.');
+    } else {
+        target.outputChatBox('!{44FF44}Вы освобождены из Деморгана главным администратором.');
+        player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} освобождён из Деморгана.`);
+    }
+    console.log(`[jail] ${player.name} (id ${player.citizenId}) освободил ${target.name} (id ${target.citizenId}) из тюрьмы через /dunjail`);
+});
+
+// /auncuff [id] — снять наручники с игрока по ID в любом месте. Только для
+// главного админа (id=1), независимо от которых-либо полномочий. Без id — с себя
+// (в т.ч. находясь в наручниках: гейт команд выше пропускает эту команду).
+mp.events.addCommand('auncuff', (player, _, argId) => {
+    if (player.citizenId !== HEAD_ADMIN_ID) { noPermMsg(player); return; }
+    const target = argId ? getPlayerById(parseInt(argId, 10)) : player;
+    if (!target) {
+        player.outputChatBox('!{FF4444}Использование: /auncuff [id] — игрок с таким ID не найден');
+        return;
+    }
+    if (!target.cuffed) {
+        player.outputChatBox(`!{FF4444}На игроке ${target.citizenId} нет наручников.`);
+        return;
+    }
+    if (typeof cuffApi.setCuffedState === 'function') cuffApi.setCuffedState(target, false);
+    target.outputChatBox('!{44FF44}С вас сняли наручники (главный администратор).');
+    player.outputChatBox(`!{44FF44}Сняты наручники с игрока ${target.citizenId} (главный админ).`);
+    console.log(`[auncuff] ${player.name} (id ${player.citizenId}) снял наручники с ${target.name} (id ${target.citizenId})`);
+});
+
+// ---------- Посадка в тюрьму задержанного (наручники + розыск) ----------
+// Как Demorgan, но посадить можно только игрока В НАРУЧНИКАХ и В РОЗЫСКЕ.
+// При посадке наручники снимаются и розыск убирается.
+const arrestEligible = (p) => !!p && p.citizenId != null && p.cuffed && p.wantedStars >= 1 && !jailMap.has(p);
+
+const arrestEligibleList = () => mp.players.toArray()
+    .filter(arrestEligible)
+    .map((p) => [p.citizenId, p.name, p.wantedStars || 0]);
+
+// Запрос интерфейса посадки у маркера тюрьмы (клавиша E).
+const arrestOpenUi = (player) => {
+    if (!hasPerm(player, 'ajail')) { noPermMsg(player); return; }
+    try {
+        const p = player.position;
+        if (p && typeof p.x === 'number') {
+            const d = Math.hypot(p.x - PRISON_MARKER_POS.x, p.y - PRISON_MARKER_POS.y);
+            if (d > PRISON_MARKER_RADIUS) {
+                player.outputChatBox('!{FF4444}Подойдите к маркеру у тюрьмы и нажмите E.');
+                return;
+            }
+        }
+    } catch (e) { /* ignore */ }
+    let payload = null;
+    try { payload = JSON.stringify({ players: arrestEligibleList() }); } catch (e) { /* ignore */ }
+    player.call('prison:openUi', [payload || '{}']);
+};
+mp.events.add('arrest:open', (player) => arrestOpenUi(player));
+
+// Посадка из формы: id, причина, время (>50 мин), комментарий
+mp.events.add('arrest:jail', (player, argId, argMin, argReason, argComment) => {
+    if (!hasPerm(player, 'ajail')) { noPermMsg(player); return; }
+    const id = parseInt(argId, 10);
+    if (!Number.isInteger(id)) {
+        player.outputChatBox('!{FF4444}Укажите корректный ID игрока.');
+        return;
+    }
+    const target = getPlayerById(id);
+    if (!target) {
+        player.outputChatBox(`!{FF4444}Игрок с ID ${id} не найден.`);
+        return;
+    }
+    if (target === player) {
+        player.outputChatBox('!{FF4444}Себя сажать в тюрьму нельзя.');
+        return;
+    }
+    if (jailMap.has(target)) {
+        player.outputChatBox(`!{FF4444}Игрок ${target.citizenId} уже в тюрьме (${formatJailTime(jailMap.get(target).release)}).`);
+        return;
+    }
+    if (!arrestEligible(target)) {
+        player.outputChatBox('!{FF4444}Посадить можно только игрока В НАРУЧНИКАХ и В РОЗЫСКЕ.');
+        return;
+    }
+    // Задержанный должен быть рядом с админом
+    try {
+        const dx = target.position.x - player.position.x;
+        const dy = target.position.y - player.position.y;
+        const dz = target.position.z - player.position.z;
+        if (Math.sqrt(dx * dx + dy * dy + dz * dz) > PRISON_TARGET_DIST) {
+            player.outputChatBox(`!{FF4444}Игрок ${target.citizenId} слишком далеко (до ${PRISON_TARGET_DIST} м).`);
+            return;
+        }
+    } catch (e) { /* ignore */ }
+    const minutes = parseInt(argMin, 10);
+    if (!Number.isInteger(minutes) || minutes < ARREST_MIN_MINUTES) {
+        player.outputChatBox(`!{FF4444}Минимальный срок — ${ARREST_MIN_MINUTES} мин (должно быть больше 50).`);
+        return;
+    }
+    if (minutes > 1440) {
+        player.outputChatBox('!{FF4444}Максимальный срок — 1440 мин (сутки).');
+        return;
+    }
+    const reason = String(argReason == null ? '' : argReason).trim().slice(0, 100);
+    const comment = String(argComment == null ? '' : argComment).trim().slice(0, 200);
+
+    // Снимаем наручники (офицер приведший задержанного освобождается от ведения)
+    if (typeof cuffApi.setCuffedState === 'function') cuffApi.setCuffedState(target, false);
+    // Снимаем розыск (и из БД, чтобы не вернулся после рестарта)
+    target.wantedStars = 0;
+    target.wantedReason = '';
+    try { target.setVariable('wantedStars', 0); } catch (e) { /* ignore */ }
+    try { target.call('star:apply', [0]); } catch (e) { /* ignore */ }
+    charDb.removeWanted(target.citizenId);
+
+    jailPlayer(target, minutes, reason || 'Арест', comment);
+    console.log(`[arrest] ${player.name} посадил ${target.name} (id ${target.citizenId}) на ${minutes} мин${reason ? ` | ${reason}` : ''}${comment ? ` | ${comment}` : ''}`);
+    player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} посажен в тюрьму на ${minutes} мин. Наручники и розыск сняты.`);
 });
 
 // ---------- Меню полномочий (главный админ) ----------
@@ -976,6 +1693,24 @@ charDb.getPerms((saved) => {
     console.log(`[perm] Загружено прав из БД: ${perms.size} игрок(-а)`);
 });
 
+// Загрузка активных тюремных записей из БД (посадки переживают рестарт)
+charDb.getJails((list) => {
+    const now = Date.now();
+    (list || []).forEach((j) => {
+        if (j.release > now) persistedJails.set(j.citizenId, { release: j.release, reason: j.reason || '', comment: j.comment || '' });
+        else charDb.removeJail(j.citizenId); // срок истёк во время рестарта — чистим
+    });
+    console.log(`[jail] Активных тюремных записей из БД: ${persistedJails.size}`);
+});
+
+// Загрузка розыска из БД (переживает рестарт)
+charDb.getWanted((list) => {
+    (list || []).forEach((w) => {
+        if (w.stars > 0) persistedWanted.set(w.citizenId, { stars: w.stars, reason: w.reason || '' });
+    });
+    console.log(`[star] Активных розысков из БД: ${persistedWanted.size}`);
+});
+
 // ---------- Ремень безопасности (клавиша J) ----------
 // Клиент сообщает состояние ремня; сервер режет урон вдвое,
 // а «невылетание» из машины делает клиент нативами (флаг педа).
@@ -1026,6 +1761,7 @@ mp.events.addCommand('star', (player, _, argId, argStars, ...reasonArgs) => {
     target.wantedReason = stars > 0 ? reason : '';
     try { target.setVariable('wantedStars', stars); } catch (e) { /* ignore */ }
     try { target.call('star:apply', [stars]); } catch (e) { /* ignore */ }
+    charDb.saveWanted(target.citizenId, stars, reason); // розыск переживёт рестарт
     if (stars > 0) {
         const starWord = stars === 1 ? 'звезда' : (stars < 5 ? 'звезды' : 'звёзд');
         target.outputChatBox(`!{FF4444}Вы объявлены в розыск (${stars} ${starWord})${reason ? `: ${reason}` : ''}!`);
@@ -1040,7 +1776,8 @@ mp.events.addCommand('star', (player, _, argId, argStars, ...reasonArgs) => {
 
 // /orm [id] — показать на карте маркер преступника, если у игрока есть звёзды.
 // Позицию цели каждую секунду шлёт СЕРВЕР (клиент не зависит от стрима/дальности).
-const ormRequests = new Map(); // requester.citizenId -> { target, startedAt, timer }
+// Маркер бессрочный — убирается командой /unorm (или при выходе из игры).
+const ormRequests = new Map(); // requester.citizenId -> { target, timer }
 
 const ormStop = (player) => {
     const rec = ormRequests.get(player.citizenId);
@@ -1068,24 +1805,40 @@ mp.events.addCommand('orm', (player, _, argId) => {
         return;
     }
     ormStop(player); // новый запрос заменяет старый
-    const startedAt = Date.now();
     const sendTick = () => {
         try {
             if (!target || !target.position) { ormStop(player); return; }
             player.call('orm:tick', [target.position.x, target.position.y, target.position.z]);
         } catch (e) { ormStop(player); }
     };
-    const timer = setInterval(() => {
-        if (Date.now() - startedAt >= 30000) { ormStop(player); return; }
-        sendTick();
-    }, 1000);
-    ormRequests.set(player.citizenId, { target, startedAt, timer });
+    const timer = setInterval(sendTick, 1000);
+    ormRequests.set(player.citizenId, { target, timer });
     try {
         player.call('orm:showMarker', [target.name, target.wantedStars, target.wantedReason || '']);
     } catch (e) { /* ignore */ }
     sendTick();
-    player.outputChatBox(`!{44FF44}Маркер преступника ${target.citizenId} показан на карте (30 сек).`);
+    player.outputChatBox(`!{44FF44}Маркер преступника ${target.citizenId} показан на карте (убрать — /unorm).`);
+});
+
+// /unorm — убрать маркер преступника (/orm)
+mp.events.addCommand('unorm', (player) => {
+    if (!hasPerm(player, 'orm') && !hasPerm(player, 'star')) { noPermMsg(player); return; }
+    if (!ormRequests.has(player.citizenId)) {
+        player.outputChatBox('!{FF4444}У вас нет активного маркера /orm.');
+        return;
+    }
+    ormStop(player);
+    player.outputChatBox('!{FFFF00}Маркер преступника убран.');
 });
 
 // ---------- Наручники / ведение / /put (отдельный модуль) ----------
-require('./cuff.js')({ getPlayerById, hasPerm, noPermMsg });
+// cuffApi.setCuffedState используется блоком «посадки в тюрьму задержанного»
+// (снять наручники после посадки). Заполняется модулем при инициализации.
+const cuffApi = {};
+require('./cuff.js')({ getPlayerById, hasPerm, noPermMsg, api: cuffApi });
+
+// ---------- Казино: деньги, фишки, игровые автоматы ----------
+require('../casino/index.js')({ hasPerm, noPermMsg });
+
+// ---------- РП-команды: /me /do /try /roll ----------
+require('../rp/index.js')();
