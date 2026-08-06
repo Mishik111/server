@@ -611,6 +611,17 @@ mp.events.add('c:setTrafficDensity', (density) => {
     trafficDensity = density;
 });
 
+// ---------- Получение высоты земли для серверного спавна трафика ----------
+mp.events.add('c:getTrafficGroundZ', (data) => {
+    const { reqId, x, y, z: fakeZ } = data;
+    const groundZ = mp.game.gameplay.getGroundZFor3dCoord(x, y, fakeZ || 1000, 0, false);
+    if (!groundZ || !Number.isFinite(groundZ)) {
+        mp.events.callRemote('c:trafficGroundZResult', reqId, null);
+        return;
+    }
+    mp.events.callRemote('c:trafficGroundZResult', reqId, groundZ);
+});
+
 mp.events.add('entityStreamIn', (entity) => {
     if (trafficDensity <= 0 || entity.type !== 'ped') return;
 

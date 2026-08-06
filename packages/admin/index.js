@@ -1096,6 +1096,25 @@ const TRAFFIC_PED_MODELS = ['a_m_y_hipster_01', 'a_m_m_skater_01', 'a_f_m_fat_ol
 
 const trafficData = { density: 0, owner: null, timer: null };
 const trafficSpawned = new Set(); 
+let _trafficHeightPending = {};
+
+const _trafficReqId = () => Math.floor(Math.random() * 2147483647);
+
+const getGroundZFromClient = (player, x, y, z) => {
+    return new Promise((resolve) => {
+        const reqId = _trafficReqId();
+        _trafficHeightPending[reqId] = { resolve, timeout: setTimeout(() => { delete _trafficHeightPending[reqId]; resolve(null); }, 1500) };
+        try { player.call('c:getTrafficGroundZ', [{ reqId, x, y, z }]); } catch (e) { resolve(null); }
+    });
+};
+
+mp.events.add('c:trafficGroundZResult', (player, reqId, groundZ) => {
+    if (_trafficHeightPending[reqId]) {
+        clearTimeout(_trafficHeightPending[reqId].timeout);
+        _trafficHeightPending[reqId].resolve(groundZ);
+        delete _trafficHeightPending[reqId];
+    }
+}); 
 
 const trafficDestroy = (e) => { 
     try { if (e && typeof e.destroy === 'function') e.destroy(); } catch (err) {} 
@@ -1116,12 +1135,24 @@ const isTrafficAlive = (e) => {
     return false;
 };
 
-// Спавн пешехода
-const trafficSpawnPed = (pos, dim) => {
+// Спавн пешехода (асинхронный — получает высоту земли у клиента)
+const trafficSpawnPed = async (pos, dim) => {
     const model = TRAFFIC_PED_MODELS[Math.floor(Math.random() * TRAFFIC_PED_MODELS.length)];
     const a = Math.random() * Math.PI * 2;
     const r = 15 + Math.random() * 45; // Спавним ближе (15-60 м)
-    const p = new mp.Vector3(pos.x + Math.cos(a) * r, pos.y + Math.sin(a) * r, pos.z);
+    const baseX = pos.x + Math.cos(a) * r;
+    const baseY = pos.y + Math.sin(a) * r;
+    
+    let spawnZ = pos.z;
+    try {
+        const owner = trafficData.owner;
+        if (owner && mp.players.exists(owner)) {
+            const gz = await getGroundZFromClient(owner, baseX, baseY, pos.z);
+            if (gz !== null) spawnZ = gz;
+        }
+    } catch (e) {}
+    
+    const p = new mp.Vector3(baseX, baseY, spawnZ);
     
     try {
         const ped = mp.peds.new(mp.joaat(model), p, { heading: Math.random() * 360, dimension: dim });
@@ -1130,12 +1161,24 @@ const trafficSpawnPed = (pos, dim) => {
     } catch (e) {}
 };
 
-// Спавн машины с водителем
-const trafficSpawnVehicle = (pos, dim) => {
+// Спавн машины с водителем (асинхронный — получает высоту земли у клиента)
+const trafficSpawnVehicle = async (pos, dim) => {
     const model = TRAFFIC_CAR_MODELS[Math.floor(Math.random() * TRAFFIC_CAR_MODELS.length)];
     const a = Math.random() * Math.PI * 2;
     const r = 35 + Math.random() * 55; // Спавним ближе к игроку (35-90 м)
-    const p = new mp.Vector3(pos.x + Math.cos(a) * r, pos.y + Math.sin(a) * r, pos.z);
+    const baseX = pos.x + Math.cos(a) * r;
+    const baseY = pos.y + Math.sin(a) * r;
+    
+    let spawnZ = pos.z;
+    try {
+        const owner = trafficData.owner;
+        if (owner && mp.players.exists(owner)) {
+            const gz = await getGroundZFromClient(owner, baseX, baseY, pos.z);
+            if (gz !== null) spawnZ = gz;
+        }
+    } catch (e) {}
+    
+    const p = new mp.Vector3(baseX, baseY, spawnZ);
 
     try {
         const veh = mp.vehicles.new(mp.joaat(model), p, { heading: Math.random() * 360, dimension: dim });
@@ -1151,8 +1194,6 @@ const trafficSpawnVehicle = (pos, dim) => {
         trafficSpawned.add(driver);
 
         // Садим водителя в авто С ЗАДЕРЖКОЙ — сразу после создания не работает.
-        // Без exists-проверок: некоторые методы exists в этой сборке отсутствуют
-        // и просто обрушат колбэк. Если сущность уже удалена — putIntoVehicle упадёт.
         setTimeout(() => {
             try { veh.engine = true; } catch (e) {}
             try { driver.putIntoVehicle(veh, 0); } catch (e) {}
@@ -1160,7 +1201,7 @@ const trafficSpawnVehicle = (pos, dim) => {
     } catch (e) {}
 };
 
-const trafficTick = () => {
+const trafficTick = async () => {
     const t = trafficData;
     if (t.density <= 0 || !t.owner || !mp.players.exists(t.owner)) return;
 
@@ -1201,10 +1242,10 @@ const trafficTick = () => {
             });
 
             const needVehs = Math.round(8 * t.density / 100) - vehs;
-            for (let i = 0; i < needVehs; i++) trafficSpawnVehicle(pos, dim);
+            (async () => { for (let i = 0; i < needVehs; i++) await trafficSpawnVehicle(pos, dim); })();
 
             const needPeds = Math.round(5 * t.density / 100) - peds;
-            for (let i = 0; i < needPeds; i++) trafficSpawnPed(pos, dim);
+            (async () => { for (let i = 0; i < needPeds; i++) await trafficSpawnPed(pos, dim); })();
         } catch (err) { /* ignore */ }
     });
 };
