@@ -248,7 +248,7 @@ mp.events.add('render', () => {
     if (mp.game.controls.isControlPressed(0, 22)) { // Space
         targetVz += maxSpeed * 0.8;
     }
-    if (mp.game.controls.isControlPressed(0, 36)) { // Ctrl
+    if (mp.ctrlDown) { // Ctrl
         targetVz -= maxSpeed * 0.8;
     }
 

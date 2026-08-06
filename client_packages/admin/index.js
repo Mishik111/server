@@ -887,7 +887,7 @@ mp.events.add('render', () => {
                 pos.x += dir.y * speed; pos.y -= dir.x * speed;
             }
             if (mp.game.controls.isControlPressed(0, 22)) pos.z += speed;
-            if (mp.game.controls.isControlPressed(0, 36)) pos.z -= speed;
+            if (mp.ctrlDown) pos.z -= speed;
             veh.position = pos;
             // Поворот машины за камерой (только по горизонтали)
             try {
@@ -972,7 +972,7 @@ mp.events.add('render', () => {
         pos.y -= dir.x * speed;
     }
     if (mp.game.controls.isControlPressed(0, 22)) pos.z += speed;
-    if (mp.game.controls.isControlPressed(0, 36)) pos.z -= speed;
+    if (mp.ctrlDown) pos.z -= speed;
 
     player.position = pos;
 

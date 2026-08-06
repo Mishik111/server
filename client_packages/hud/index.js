@@ -69,3 +69,23 @@ function syncHud() {
 setInterval(() => {
     syncHud();
 }, 100);
+
+// Ctrl — только функциональная клавиша (полёт, дрон), персонаж не приседает.
+// disableControlAction(0, 36) гасит действие приседания, но также заставляет
+// isControlPressed(0, 36) возвращать false, поэтому зажатие Ctrl отслеживаем
+// напрямую через mp.keys и храним в глобальном флаге mp.ctrlDown.
+mp.ctrlDown = false;
+function bindCtrlHold(key) {
+    mp.keys.bind(key, true, () => { mp.ctrlDown = true; });
+    mp.keys.bind(key, false, () => { mp.ctrlDown = false; });
+}
+bindCtrlHold(0x11); // Left Ctrl / VK_CONTROL
+bindCtrlHold(0xA3); // Right Ctrl / VK_RCONTROL
+
+mp.events.add('render', () => {
+    try {
+        mp.game.controls.disableControlAction(0, 36, true);
+        mp.game.ui.hideHudComponentThisFrame(7); // AREA_NAME
+        mp.game.ui.hideHudComponentThisFrame(9); // STREET_NAME
+    } catch (e) { /* ignore */ }
+});
