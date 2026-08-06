@@ -1109,8 +1109,9 @@ const trafficCleanupAll = () => {
 const isTrafficAlive = (e) => {
     if (!e) return false;
     try {
-        if (e.type === 'ped') return mp.peds.exists(e);
-        if (e.type === 'vehicle') return mp.vehicles.exists(e);
+        // Проверяем через пулы (методы .exists в этой сборке ненадёжны)
+        if (e.type === 'ped') return mp.peds.toArray().indexOf(e) !== -1;
+        if (e.type === 'vehicle') return mp.vehicles.toArray().indexOf(e) !== -1;
     } catch (err) {}
     return false;
 };
@@ -1150,9 +1151,9 @@ const trafficSpawnVehicle = (pos, dim) => {
         trafficSpawned.add(driver);
 
         // Садим водителя в авто С ЗАДЕРЖКОЙ — сразу после создания не работает.
-        // Если машина/пед за это время были удалены — не падаем.
+        // Без exists-проверок: некоторые методы exists в этой сборке отсутствуют
+        // и просто обрушат колбэк. Если сущность уже удалена — putIntoVehicle упадёт.
         setTimeout(() => {
-            if (!mp.vehicles.exists(veh) || !mp.peds.exists(driver)) return;
             try { veh.engine = true; } catch (e) {}
             try { driver.putIntoVehicle(veh, 0); } catch (e) {}
         }, 250);
@@ -1162,37 +1163,50 @@ const trafficSpawnVehicle = (pos, dim) => {
 const trafficTick = () => {
     const t = trafficData;
     if (t.density <= 0 || !t.owner || !mp.players.exists(t.owner)) return;
-    
-    const owner = t.owner;
-    const pos = owner.position;
-    const dim = owner.dimension;
 
-    // Очистка уехавших или уничтоженных
+    // Очистка: сломавшиеся сущности либо те, что дальше 250 м от ВСЕХ игроков
+    // (их никто не видит — пересоздадим возле активных игроков).
     const toRemove = [];
     trafficSpawned.forEach((e) => {
         try {
             if (!isTrafficAlive(e)) { toRemove.push(e); return; }
             const ep = e.position;
-            if (!ep || Math.hypot(ep.x - pos.x, ep.y - pos.y) > 250) toRemove.push(e); // Уменьшен радиус удаления
+            if (!ep) { toRemove.push(e); return; }
+            let nearAnyone = false;
+            mp.players.forEach((p) => {
+                if (!p || !p.position) return;
+                const dx = ep.x - p.position.x, dy = ep.y - p.position.y;
+                if (dx * dx + dy * dy < 250 * 250) nearAnyone = true;
+            });
+            if (!nearAnyone) toRemove.push(e);
         } catch (err) { toRemove.push(e); }
     });
-
     toRemove.forEach((e) => { trafficSpawned.delete(e); trafficDestroy(e); });
 
-    // Подсчёт текущих сущностей
-    let peds = 0;
-    let vehs = 0;
-    trafficSpawned.forEach((e) => { 
-        if (e.type === 'ped' && e.getVariable('trafficType') === 'ped') peds++; 
-        else if (e.type === 'vehicle') vehs++; 
+    // Поддержание трафика: возле КАЖДОГО игрока своя порция машин и пешеходов,
+    // чтобы трафик был не только у админа, но и у его друзей/прохожих.
+    mp.players.forEach((p) => {
+        try {
+            if (!p || !p.position) return;
+            const pos = p.position;
+            const dim = p.dimension;
+
+            let peds = 0, vehs = 0;
+            trafficSpawned.forEach((e) => {
+                if (!e.position) return;
+                const dx = e.position.x - pos.x, dy = e.position.y - pos.y;
+                if (dx * dx + dy * dy > 70 * 70) return; // считаем только близких к этому игроку
+                if (e.type === 'ped' && e.getVariable && e.getVariable('trafficType') === 'ped') peds++;
+                else if (e.type === 'vehicle') vehs++;
+            });
+
+            const needVehs = Math.round(8 * t.density / 100) - vehs;
+            for (let i = 0; i < needVehs; i++) trafficSpawnVehicle(pos, dim);
+
+            const needPeds = Math.round(5 * t.density / 100) - peds;
+            for (let i = 0; i < needPeds; i++) trafficSpawnPed(pos, dim);
+        } catch (err) { /* ignore */ }
     });
-
-    // УВЕЛИЧЕННЫЕ ЛИМИТЫ: 40 машин и 25 пешеходов при 100%
-    const needVehs = Math.round(40 * t.density / 100) - vehs;
-    for (let i = 0; i < needVehs; i++) trafficSpawnVehicle(pos, dim);
-
-    const needPeds = Math.round(25 * t.density / 100) - peds;
-    for (let i = 0; i < needPeds; i++) trafficSpawnPed(pos, dim);
 };
 
 const setTraffic = (player, argDensity, def) => {
