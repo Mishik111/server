@@ -1093,92 +1093,105 @@ mp.events.addCommand('ar', (player, _, argAmount, argId) => {
 // /trafic — старый псевдоним.
 const TRAFFIC_CAR_MODELS = ['adder', 'buffalo', 'blista', 'felon', 'oracle', 'sultan', 'sentinel', 'surano', 'kuruma', 'comet2'];
 const TRAFFIC_PED_MODELS = ['a_m_y_hipster_01', 'a_m_m_skater_01', 'a_f_m_fat_old_01', 'a_m_y_stwhi_01', 'a_m_m_bevhills_02', 'a_f_y_business_02', 'a_m_y_beach_01'];
-const trafficData = { density: 0, owner: null, timer: null };
-const trafficSpawned = new Set(); // все созданные нами сущности (педы + машины)
 
-const trafficDestroy = (e) => { try { if (e && typeof e.destroy === 'function') e.destroy(); } catch (err) { /* ignore */ } };
+const trafficData = { density: 0, owner: null, timer: null };
+const trafficSpawned = new Set(); 
+
+const trafficDestroy = (e) => { 
+    try { if (e && typeof e.destroy === 'function') e.destroy(); } catch (err) {} 
+};
+
 const trafficCleanupAll = () => {
     trafficSpawned.forEach(trafficDestroy);
     trafficSpawned.clear();
 };
 
-// Проверка «жива ли сущность» через пулы (mp.entities НЕ существует сервером —
-// любая проверка через него падала в catch и удаляла ВСЁ каждый тик).
 const isTrafficAlive = (e) => {
+    if (!e) return false;
     try {
-        if (e.type === 'ped') return mp.peds.toArray().indexOf(e) !== -1;
-        if (e.type === 'vehicle') return mp.vehicles.toArray().indexOf(e) !== -1;
-        return true;
-    } catch (err) { return false; }
+        if (e.type === 'ped') return mp.peds.exists(e);
+        if (e.type === 'vehicle') return mp.vehicles.exists(e);
+    } catch (err) {}
+    return false;
 };
 
+// Спавн пешехода
 const trafficSpawnPed = (pos, dim) => {
     const model = TRAFFIC_PED_MODELS[Math.floor(Math.random() * TRAFFIC_PED_MODELS.length)];
     const a = Math.random() * Math.PI * 2;
-    const r = 30 + Math.random() * 60;
+    const r = 15 + Math.random() * 45; // Спавним ближе (15-60 м)
     const p = new mp.Vector3(pos.x + Math.cos(a) * r, pos.y + Math.sin(a) * r, pos.z);
+    
     try {
         const ped = mp.peds.new(mp.joaat(model), p, { heading: Math.random() * 360, dimension: dim });
+        ped.setVariable('trafficType', 'ped'); // Передаём тип на клиент
         trafficSpawned.add(ped);
-    } catch (e) { /* модель не загрузилась */ }
+    } catch (e) {}
 };
 
+// Спавн машины с водителем
 const trafficSpawnVehicle = (pos, dim) => {
     const model = TRAFFIC_CAR_MODELS[Math.floor(Math.random() * TRAFFIC_CAR_MODELS.length)];
     const a = Math.random() * Math.PI * 2;
-    const r = 60 + Math.random() * 80;
+    const r = 35 + Math.random() * 55; // Спавним ближе к игроку (35-90 м)
     const p = new mp.Vector3(pos.x + Math.cos(a) * r, pos.y + Math.sin(a) * r, pos.z);
-    // Хэш передаём ЧИСЛОМ (mp.joaat), как везде в проекте (/veh): строковый
-    // model в mp.vehicles.new эта версия рантайма не принимает — молча падало.
-    let veh = null;
+
     try {
-        veh = mp.vehicles.new(mp.joaat(model), p, { heading: Math.random() * 360, dimension: dim });
-        try { veh.engine = true; } catch (e2) { /* ignore */ }
+        const veh = mp.vehicles.new(mp.joaat(model), p, { heading: Math.random() * 360, dimension: dim });
+        veh.engine = true;
         trafficSpawned.add(veh);
-    } catch (e) { /* машину создать не удалось */ return; }
-    try {
-        const ped = mp.peds.new(mp.joaat('a_m_y_hipster_01'), p, { heading: Math.random() * 360, dimension: dim });
-        trafficSpawned.add(ped);
-        // Посадка в машину — не сразу после создания (API: нужен таймаут ~200 мс)
+
+        const driver = mp.peds.new(mp.joaat('a_m_y_hipster_01'), p, { heading: 0, dimension: dim });
+        
+        // Синхронизируем связь водителя и авто с клиентом
+        driver.setVariable('trafficType', 'driver');
+        driver.setVariable('trafficVehId', veh.id); 
+
+        trafficSpawned.add(driver);
+
+        // Садим водителя в авто С ЗАДЕРЖКОЙ — сразу после создания не работает.
+        // Если машина/пед за это время были удалены — не падаем.
         setTimeout(() => {
-            try {
-                if (isTrafficAlive(veh) && isTrafficAlive(ped)) ped.putIntoVehicle(veh, 0);
-            } catch (e2) { /* ignore */ }
+            if (!mp.vehicles.exists(veh) || !mp.peds.exists(driver)) return;
+            try { veh.engine = true; } catch (e) {}
+            try { driver.putIntoVehicle(veh, 0); } catch (e) {}
         }, 250);
-    } catch (e) { /* водителя создать не удалось — машина останется пустой */ }
+    } catch (e) {}
 };
 
 const trafficTick = () => {
     const t = trafficData;
     if (t.density <= 0 || !t.owner || !mp.players.exists(t.owner)) return;
+    
     const owner = t.owner;
     const pos = owner.position;
     const dim = owner.dimension;
-    // Удаляем только сломанных (убитых/удалённых иначе) и тех, от кого владелец
-    // уехал дальше 350 м. Всё остальное ЖИВЁТ ПОСТОЯННО — трафик не «мигает».
+
+    // Очистка уехавших или уничтоженных
     const toRemove = [];
     trafficSpawned.forEach((e) => {
         try {
             if (!isTrafficAlive(e)) { toRemove.push(e); return; }
             const ep = e.position;
-            if (!ep || Math.hypot(ep.x - pos.x, ep.y - pos.y) > 350) toRemove.push(e);
+            if (!ep || Math.hypot(ep.x - pos.x, ep.y - pos.y) > 250) toRemove.push(e); // Уменьшен радиус удаления
         } catch (err) { toRemove.push(e); }
     });
+
     toRemove.forEach((e) => { trafficSpawned.delete(e); trafficDestroy(e); });
-    // На большой скорости не создаём новые (позиции пойдут неверные + стрим-хаос)
-    let speed = 0;
-    try {
-        const v = owner.vehicle;
-        if (v && v.velocity) speed = Math.hypot(v.velocity.x, v.velocity.y, v.velocity.z);
-    } catch (e) { /* ignore */ }
-    if (speed > 40) return;
-    // Дополняем до нужного количества вокруг владельца: машин больше, пешеходов меньше
+
+    // Подсчёт текущих сущностей
     let peds = 0;
     let vehs = 0;
-    trafficSpawned.forEach((e) => { if (e.type === 'ped') peds++; else if (e.type === 'vehicle') vehs++; });
-    const needVehs = Math.round(14 * t.density / 100) - vehs;
+    trafficSpawned.forEach((e) => { 
+        if (e.type === 'ped' && e.getVariable('trafficType') === 'ped') peds++; 
+        else if (e.type === 'vehicle') vehs++; 
+    });
+
+    // УВЕЛИЧЕННЫЕ ЛИМИТЫ: 40 машин и 25 пешеходов при 100%
+    const needVehs = Math.round(40 * t.density / 100) - vehs;
     for (let i = 0; i < needVehs; i++) trafficSpawnVehicle(pos, dim);
-    const needPeds = Math.round(4 * t.density / 100) - peds;
+
+    const needPeds = Math.round(25 * t.density / 100) - peds;
     for (let i = 0; i < needPeds; i++) trafficSpawnPed(pos, dim);
 };
 
@@ -1187,20 +1200,29 @@ const setTraffic = (player, argDensity, def) => {
     let density = parseInt(argDensity, 10);
     if (isNaN(density)) density = def;
     density = Math.max(0, Math.min(100, density));
+
     if (trafficData.timer) { clearInterval(trafficData.timer); trafficData.timer = null; }
     trafficCleanupAll();
-    trafficData.owner = null;
-    trafficData.density = 0;
+    
+    trafficData.owner = density > 0 ? player : null;
+    trafficData.density = density;
+
+    mp.players.call('c:setTrafficDensity', [density]);
+
     if (density <= 0) {
         player.outputChatBox('!{FF4444}NPC-трафик выключен.');
         return;
     }
-    trafficData.owner = player;
-    trafficData.density = density;
+
     trafficTick();
-    trafficData.timer = setInterval(trafficTick, 4000);
-    player.outputChatBox(`!{44FF44}NPC-трафик включён (плотность ${density}%, видят все игроки).`);
+    trafficData.timer = setInterval(trafficTick, 3000); // Обновление каждые 3 секунды
+    player.outputChatBox(`!{44FF44}NPC-трафик включён (плотность ${density}%).`);
 };
+
+mp.events.add('playerReady', (player) => {
+    player.call('c:setTrafficDensity', [trafficData.density]);
+});
+
 mp.events.addCommand('traffic', (player, _, arg) => setTraffic(player, arg, 100));
 mp.events.addCommand('trafic', (player, _, arg) => setTraffic(player, arg, 100));
 

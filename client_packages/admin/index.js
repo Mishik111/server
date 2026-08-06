@@ -605,38 +605,55 @@ const drawEspLabel = (worldPos, lines, color, scale = 0.35) => {
 // такие объекты основной части видят ВСЕ игроки, а не только админ.
 // Здесь в клиенте мы только «оживляем» застримленные к себе педы:
 // пешеход — TASK_WANDER_IN_AREA (блуждание), водитель — TASK_VEHICLE_DRIVE_WANDER (езда).
-let trafficDensity = 0; // 0-100 (%): сколько NPC спавнить; 0 = выключено
+let trafficDensity = 0;
 
-const TRAFFIC_CAR_MODELS = ['adder', 'buffalo', 'blista', 'felon', 'oracle', 'sultan', 'sentinel', 'surano', 'kuruma', 'comet2'];
-const TRAFFIC_PED_MODELS = ['a_m_y_hipster_01', 'a_m_m_skater_01', 'a_f_m_fat_old_01', 'a_m_y_stwhi_01', 'a_m_m_bevhills_02', 'a_f_y_business_02', 'a_m_y_beach_01'];
-const TRAFFIC_CAR_HASHES = TRAFFIC_CAR_MODELS.map((m) => mp.game.joaat(m) >>> 0);
-const TRAFFIC_PED_HASHES = TRAFFIC_PED_MODELS.map((m) => mp.game.joaat(m) >>> 0);
+mp.events.add('c:setTrafficDensity', (density) => {
+    trafficDensity = density;
+});
 
 mp.events.add('entityStreamIn', (entity) => {
-    if (trafficDensity <= 0) return;
-    if (entity.type !== 'ped') return;
-    if (TRAFFIC_PED_HASHES.indexOf(entity.model >>> 0) === -1) return;
-    const assignTask = () => {
-        try {
-            if (entity.vehicle && entity.vehicle.handle &&
-                TRAFFIC_CAR_HASHES.indexOf(entity.vehicle.model >>> 0) !== -1) {
-                // Водитель трафик-авто: езда по городу (TASK_VEHICLE_DRIVE_WANDER: пед, авто, скорость, стиль)
-                mp.game.invoke('0x480142959D337D00', entity.handle, entity.vehicle.handle, 25.0 + Math.random() * 10, 0);
-            } else {
-                // Обычный пешеход: блуждание в радиусе 50 м от точки (TASK_WANDER_IN_AREA)
-                const p = entity.position;
-                mp.game.invoke('0xE054346CA3A0F315', entity.handle, p.x, p.y, p.z, 50, 0, 0);
+    if (trafficDensity <= 0 || entity.type !== 'ped') return;
+
+    const trafficType = entity.getVariable('trafficType');
+    if (!trafficType) return; // Не наш трафик-бот
+
+    if (trafficType === 'driver') {
+        const vehId = entity.getVariable('trafficVehId');
+        
+        // Водителя в машину сажает СЕРВЕР (putIntoVehicle с задержкой 250 мс).
+        // Клиент: дожидаемся, пока пед реально окажется в авто (может застримиться
+        // раньше, чем сервер посадит), и только потом запускаем езду.
+        const findVehicle = (retries = 0) => {
+            if (!entity || !entity.handle) return;
+            const veh = mp.vehicles.atRemoteId(vehId);
+            if (!veh || !veh.handle) {
+                if (retries < 12) setTimeout(() => findVehicle(retries + 1), 200);
+                return;
             }
-        } catch (e) { /* ignore */ }
-    };
-    assignTask();
-    // Водителя сажают в машину на сервере с задержкой ~250 мс — пед может застримиться
-    // раньше, чем окажется в авто. Пере-назначаем задачу один раз чуть позже.
-    try {
-        setTimeout(() => {
-            if (entity && entity.handle) assignTask();
-        }, 400);
-    } catch (e) { /* ignore */ }
+            waitSeatedAndDrive(veh);
+        };
+
+        const waitSeatedAndDrive = (veh, attempt = 0) => {
+            if (!entity || !entity.handle || !veh || !veh.handle) return;
+            let inVeh = false;
+            try { inVeh = mp.game.ped.isPedInAnyVehicle(entity.handle, true); } catch (e) { inVeh = false; }
+            if (inVeh) {
+                try {
+                    mp.game.ped.setPedIntoVehicle(entity.handle, veh.handle, -1);
+                    mp.game.ai.taskVehicleDriveWander(entity.handle, veh.handle, 18.0, 786603);
+                } catch (e) { /* ignore */ }
+            } else if (attempt < 15) {
+                setTimeout(() => waitSeatedAndDrive(veh, attempt + 1), 100);
+            }
+        };
+
+        findVehicle();
+
+    } else if (trafficType === 'ped') {
+        // Запуск ходьбы для обычных пешеходов
+        const p = entity.position;
+        mp.game.ai.taskWanderInArea(entity.handle, p.x, p.y, p.z, 40.0, 1.0, 1.0);
+    }
 });
 
 mp.events.add('render', () => {
