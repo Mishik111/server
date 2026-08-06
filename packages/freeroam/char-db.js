@@ -107,6 +107,14 @@ initSqlJs({ wasmBinary: fs.readFileSync(WASM_FILE) })
                 console.log('[DB] таблица jails мигрирована: добавлена колонка comment');
             }
         } catch (e) { /* ignore */ }
+        // Миграция: добавляем колонку type (demorgan | prison) в jails (если её нет)
+        try {
+            const jtcols = db.exec('PRAGMA table_info(jails)');
+            if (jtcols[0] && !jtcols[0].values.some((c) => c[1] === 'jtype')) {
+                db.run("ALTER TABLE jails ADD COLUMN jtype TEXT NOT NULL DEFAULT 'demorgan'");
+                console.log('[DB] таблица jails мигрирована: добавлена колонка jtype');
+            }
+        } catch (e) { /* ignore */ }
         let count = 0;
         try {
             const rows = db.exec('SELECT COUNT(*) AS c FROM characters');
@@ -199,13 +207,13 @@ module.exports = {
             }
         });
     },
-    saveJail(citizenId, release, reason, comment) {
+    saveJail(citizenId, release, reason, comment, type) {
         whenReady(() => {
             try {
                 db.run(
-                    'INSERT INTO jails (citizenId, release, reason, comment, updated) VALUES (?,?,?,?,?) ' +
-                    'ON CONFLICT(citizenId) DO UPDATE SET release=excluded.release, reason=excluded.reason, comment=excluded.comment, updated=excluded.updated',
-                    [citizenId, Math.floor(release), String(reason || ''), String(comment || ''), Date.now()]
+                    'INSERT INTO jails (citizenId, release, reason, comment, jtype, updated) VALUES (?,?,?,?,?,?) ' +
+                    'ON CONFLICT(citizenId) DO UPDATE SET release=excluded.release, reason=excluded.reason, comment=excluded.comment, jtype=excluded.jtype, updated=excluded.updated',
+                    [citizenId, Math.floor(release), String(reason || ''), String(comment || ''), String(type || 'demorgan'), Date.now()]
                 );
                 persist();
             } catch (e) {
@@ -227,9 +235,9 @@ module.exports = {
         whenReady(() => {
             const out = [];
             try {
-                const res = db.exec('SELECT citizenId, release, reason, comment FROM jails');
+                const res = db.exec('SELECT citizenId, release, reason, comment, jtype FROM jails');
                 if (res[0]) {
-                    res[0].values.forEach((r) => out.push({ citizenId: r[0], release: r[1], reason: r[2] || '', comment: r[3] || '' }));
+                    res[0].values.forEach((r) => out.push({ citizenId: r[0], release: r[1], reason: r[2] || '', comment: r[3] || '', jtype: r[4] || 'demorgan' }));
                 }
             } catch (e) {
                 console.log(`[DB] getJails err: ${e}`);

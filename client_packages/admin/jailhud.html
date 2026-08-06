@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Jail HUD</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800;900&family=Rajdhani:wght@600;700&family=Inter:wght@500;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent !important;
+            background-color: transparent !important;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            user-select: none;
+            pointer-events: none;
+        }
+
+        /* --- Bottom Right Jail Card --- */
+        #jail-hud {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: rgba(12, 16, 26, 0.92);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-right: 3px solid #ff3b3b;
+            border-radius: 20px;
+            padding: 16px 24px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-width: 230px;
+            opacity: 0;
+            transform: translateY(20px) scale(0.95);
+            transition: all 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 1000;
+        }
+
+        /* Тюрьма (по розыску/наручникам) — красный акцент */
+        #jail-hud.prison {
+            border-right-color: #ff3b3b;
+        }
+        /* Demorgan (/ajail) — холодный синий акцент */
+        #jail-hud.demorgan {
+            border-right-color: #3b82ff;
+        }
+
+        #jail-hud.visible {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+
+        .jail-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 13px;
+            font-weight: 800;
+            letter-spacing: 2px;
+            color: #ff5a5a;
+            text-shadow: 0 0 12px rgba(255, 90, 90, 0.5);
+        }
+        #jail-hud.demorgan .jail-title {
+            color: #6aa6ff;
+            text-shadow: 0 0 12px rgba(106, 166, 255, 0.5);
+        }
+
+        .jail-title svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+
+        .jail-timer {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 42px;
+            font-weight: 900;
+            color: #ffffff;
+            line-height: 1;
+            text-shadow: 0 0 18px rgba(255, 90, 90, 0.35);
+            letter-spacing: 2px;
+        }
+        #jail-hud.demorgan .jail-timer {
+            text-shadow: 0 0 18px rgba(106, 166, 255, 0.4);
+        }
+
+        .jail-timer.warn {
+            color: #ff8a3b;
+            text-shadow: 0 0 18px rgba(255, 138, 59, 0.45);
+        }
+
+        .jail-timer.crit {
+            color: #ff3b3b;
+            text-shadow: 0 0 20px rgba(255, 59, 59, 0.6);
+            animation: pulse 1s infinite alternate;
+        }
+
+        @keyframes pulse {
+            from { opacity: 1; }
+            to { opacity: 0.45; }
+        }
+
+        .jail-divider {
+            width: 100%;
+            height: 1px;
+            background: linear-gradient(90deg, rgba(255, 91, 91, 0.4), transparent);
+        }
+
+        .jail-info {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .jail-info-row {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            font-size: 12px;
+        }
+
+        .jail-info-label {
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: rgba(255, 255, 255, 0.4);
+            white-space: nowrap;
+        }
+
+        .jail-info-value {
+            font-family: 'Rajdhani', sans-serif;
+            font-weight: 700;
+            font-size: 16px;
+            color: #ffd9a3;
+            text-shadow: 0 0 8px rgba(255, 175, 90, 0.25);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 320px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="jail-hud">
+        <div class="jail-title">
+            <svg viewBox="0 0 24 24"><path d="M4 3h16v2h-2v4h2v2h-2v4h2v2h-2v4h2v2H4v-2h2v-4H4v-2h2v-4H4V7h2V3H4V3zm5 0h2v3H9V3zm4 0h2v3h-2V3zM9 10h2v3H9v-3zm4 0h2v3h-2v-3zM9 17h2v3H9v-3zm4 0h2v3h-2v-3z"/></svg>
+            <span id="jail-title-text">ТЮРЬМА</span>
+        </div>
+        <div class="jail-timer" id="jail-time">00:00</div>
+        <div class="jail-divider"></div>
+        <div class="jail-info">
+            <div class="jail-info-row" id="jail-reason" style="display:none;">
+                <span class="jail-info-label">Причина</span>
+                <span class="jail-info-value" id="jail-reason-val"></span>
+            </div>
+            <div class="jail-info-row" id="jail-comment" style="display:none;">
+                <span class="jail-info-label">Комментарий</span>
+                <span class="jail-info-value" id="jail-comment-val"></span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.__updateJail = function (seconds, reason, comment, type) {
+            var el = document.getElementById('jail-hud');
+            if (!el) return;
+
+            type = type === 'prison' ? 'prison' : 'demorgan';
+            el.classList.remove('prison', 'demorgan');
+            el.classList.add(type);
+            document.getElementById('jail-title-text').textContent = (type === 'prison') ? 'ТЮРЬМА' : 'ДЕМОРГАН';
+
+            seconds = Math.max(0, Number(seconds) || 0);
+
+            if (seconds <= 0) {
+                el.classList.remove('visible');
+                return;
+            }
+            el.classList.add('visible');
+
+            var mm = String(Math.floor(seconds / 60)).padStart(2, '0');
+            var ss = String(Math.floor(seconds % 60)).padStart(2, '0');
+            var timeEl = document.getElementById('jail-time');
+            timeEl.textContent = mm + ':' + ss;
+
+            timeEl.classList.remove('crit', 'warn');
+            if (seconds <= 60) timeEl.classList.add('crit');
+            else if (seconds <= 300) timeEl.classList.add('warn');
+
+            var reasonEl = document.getElementById('jail-reason');
+            if (reason) {
+                document.getElementById('jail-reason-val').textContent = reason;
+                reasonEl.style.display = '';
+            } else {
+                reasonEl.style.display = 'none';
+            }
+
+            var commentEl = document.getElementById('jail-comment');
+            if (comment) {
+                document.getElementById('jail-comment-val').textContent = comment;
+                commentEl.style.display = '';
+            } else {
+                commentEl.style.display = 'none';
+            }
+        };
+    </script>
+</body>
+</html>

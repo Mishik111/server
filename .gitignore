@@ -6,13 +6,6 @@ BugTrap-x64.dll
 ragemp-server.exe
 linux_x64.tar.gz
 
-# Конфиг с паролями (server.conf / mysql и т.п.)
-conf.json
-
-# Рантайм-данные
-server.db
-positions.txt
-
 # Кэш и мусор
 .listcache
 node_modules/

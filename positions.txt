@@ -1,0 +1,8 @@
+name: WeirdNewbie  id: 1  pos: [1856.268, 2601.505, 45.672]  heading: 70.80
+name: WeirdNewbie  id: 1  pos: [1685.712, 2511.637, 50.159]  heading: 77.58
+name: WeirdNewbie  id: 1  pos: [1846.642, 2585.909, 56.468]  heading: 77.58
+name: WeirdNewbie  id: 1  pos: [1818.261, 2607.210, 45.582]  heading: -174.44
+name: WeirdNewbie  id: 1  pos: [1818.200, 2607.677, 45.588]  heading: 107.92
+name: WeirdNewbie  id: 1  pos: [1690.630, 2591.146, 45.914]  heading: 175.92
+name: WeirdNewbie  id: 1  pos: [1690.693, 2591.579, 45.901]  heading: -164.74
+name: WeirdNewbie  id: 1  pos: [1690.134, 2591.146, 45.914]  heading: -154.37

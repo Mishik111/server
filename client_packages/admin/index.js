@@ -14,7 +14,17 @@ let jailActive = false;
 let jailSeconds = 0;
 let jailReason = '';
 let jailComment = '';
+let jailType = 'demorgan'; // 'demorgan' (/ajail) или 'prison' (тюрьма по розыску/наручникам)
 let jailLastTickAt = 0;
+
+// CEF-браузер HUD тюрьмы (таймер) — дизайн как у основного HUD
+let jailHudBrowser = null;
+const closeJailHud = () => {
+    if (jailHudBrowser) {
+        try { jailHudBrowser.destroy(); } catch (e) { /* ignore */ }
+        jailHudBrowser = null;
+    }
+};
 
 // Маркер у входа в тюрьму (интерфейс посадки задержанного):
 // большой маркер в мире + блин на радаре, видны админам с правом ajail
@@ -268,11 +278,15 @@ mp.events.add('chatInput', (state) => {
 });
 
 // События тюрьмы от сервера (таймер / блок полёта)
-mp.events.add('jail:start', (seconds, reason, comment) => {
+mp.events.add('jail:start', (seconds, reason, comment, type) => {
     jailActive = true;
     jailSeconds = Number(seconds) || 0;
     jailReason = reason ? String(reason) : '';
     jailComment = comment ? String(comment) : '';
+    jailType = type === 'prison' ? 'prison' : 'demorgan';
+    if (!jailHudBrowser) {
+        try { jailHudBrowser = mp.browsers.new('package://admin/jailhud.html'); } catch (e) { jailHudBrowser = null; }
+    }
 });
 mp.events.add('jail:tick', (seconds) => {
     if (jailActive) {
@@ -285,6 +299,8 @@ mp.events.add('jail:stop', () => {
     jailSeconds = 0;
     jailReason = '';
     jailComment = '';
+    jailType = 'demorgan';
+    closeJailHud();
 });
 
 // ---------- Маркер тюрьмы (блин на радаре + жёлтый маркер в мире) ----------
@@ -722,7 +738,7 @@ mp.events.add('render', () => {
         escHold--;
     }
 
-    // Большой таймер тюрьмы справа снизу
+    // Большой таймер тюрьмы справа снизу (CEF HUD)
     if (jailActive && jailSeconds > 0) {
         let timeLeft = jailSeconds;
         try {
@@ -732,17 +748,10 @@ mp.events.add('render', () => {
                 timeLeft = Math.max(0, jailSeconds - elapsed);
             }
         } catch (e) { /* ignore */ }
-        const mm = String(Math.floor(timeLeft / 60)).padStart(2, '0');
-        const ss = String(Math.floor(timeLeft % 60)).padStart(2, '0');
-        drawTextRow(0.95, 0.72, 'ТЮРЬМА', [255, 70, 70, 255], 0.5);
-        drawTextRow(0.95, 0.80, `${mm}:${ss}`, [255, 255, 255, 255], 1.4);
-        let ty = 0.885;
-        if (jailReason) {
-            drawTextRow(0.95, ty, 'ПРИЧИНА: ' + jailReason, [255, 230, 160, 255], 0.4);
-            ty += 0.045;
-        }
-        if (jailComment) {
-            drawTextRow(0.95, ty, 'КОММЕНТАРИЙ: ' + jailComment, [255, 230, 160, 255], 0.4);
+        if (jailHudBrowser) {
+            try {
+                jailHudBrowser.execute('window.__updateJail(' + Math.round(timeLeft) + ',' + JSON.stringify(jailReason || '') + ',' + JSON.stringify(jailComment || '') + ',' + JSON.stringify(jailType) + ')');
+            } catch (e) { /* ignore */ }
         }
     }
 

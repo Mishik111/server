@@ -135,7 +135,7 @@ mp.events.add('playerReady', (player) => {
         if (rec) {
             persistedJails.delete(player.citizenId);
             if (rec.release > Date.now()) {
-                applyJailState(player, rec.release, rec.reason, rec.comment);
+                applyJailState(player, rec.release, rec.reason, rec.comment, rec.type);
                 player.outputChatBox('!{FF4444}Вы возвращены в тюрьму: срок наказания ещё не истёк.');
             } else {
                 charDb.removeJail(player.citizenId); // срок истёк во время рестарта
@@ -1370,8 +1370,9 @@ const releasePlayer = (player) => {
 
 // Применяет тюремное состояние: камера, скин, таймер. Используется и при посадке,
 // и при возврате в тюрьму после перезахода (запись из БД).
-const applyJailState = (player, release, reason, comment) => {
-    jailMap.set(player, { release, reason, comment: comment || '' });
+const applyJailState = (player, release, reason, comment, type) => {
+    const jailType = type === JAIL_TYPE_PRISON ? JAIL_TYPE_PRISON : JAIL_TYPE_DEMORGAN;
+    jailMap.set(player, { release, reason, comment: comment || '', type: jailType });
     try {
         player.removeAllWeapons();
         player.position = JAIL_POS;
@@ -1380,22 +1381,24 @@ const applyJailState = (player, release, reason, comment) => {
         player.health = 100;
         player.armour = 100;
         // Одеваем скин заключённого (запоминаем прежний скин, чтобы вернуть при выходе)
+        const skinModel = jailType === JAIL_TYPE_PRISON ? JAIL_SKIN_PRISON : JAIL_SKIN_DEMORGAN;
         player._prevSkinModel = player.customSkinModel || null;
         try {
-            player.customSkinModel = mp.joaat('ig_rashcosvki');
+            player.customSkinModel = mp.joaat(skinModel);
             player.model = player.customSkinModel;
         } catch (e) { /* ignore */ }
-        player.call('jail:start', [Math.max(1, Math.ceil((release - Date.now()) / 1000)), reason, comment || '']);
+        player.call('jail:start', [Math.max(1, Math.ceil((release - Date.now()) / 1000)), reason, comment || '', jailType]);
     } catch (e) { /* ignore */ }
 };
 
-const jailPlayer = (player, minutes, reason, comment) => {
+const jailPlayer = (player, minutes, reason, comment, type) => {
     const release = Date.now() + minutes * 60 * 1000;
-    applyJailState(player, release, reason, comment);
-    charDb.saveJail(player.citizenId, release, reason, comment); // сохраняем — переживёт рестарт
+    applyJailState(player, release, reason, comment, type);
+    charDb.saveJail(player.citizenId, release, reason, comment, type || JAIL_TYPE_DEMORGAN); // сохраняем — переживёт рестарт
     const rText = reason ? ` Причина: ${reason}` : '';
     const cText = comment ? ` Комментарий: ${comment}` : '';
-    player.outputChatBox(`!{FF4444}Вы заключены в федеральную тюрьму (Demorgan) на ${minutes} мин!${rText}${cText}`);
+    const place = type === JAIL_TYPE_PRISON ? 'тюрьму' : 'федеральную тюрьму (Demorgan)';
+    player.outputChatBox(`!{FF4444}Вы заключены в ${place} на ${minutes} мин!${rText}${cText}`);
 };
 
 // Возвращаем обычную внешность после тюрьмы (если скин менял jailPlayer)
@@ -1418,6 +1421,16 @@ const restoreAfterJail = (player) => {
 // возвращаем обратно в камеру (спавн тюрьмы)
 const JAIL_EXIT_POS = new mp.Vector3(1818.200, 2607.677, 45.588);
 const JAIL_EXIT_RADIUS = 100.0;
+
+// Тип наказания: 'demorgan' — /ajail (федеральная тюрьма Demorgan),
+// 'prison' — тюрьма по розыску/наручникам (посадка у маркера).
+// У каждого свой скин заключённого.
+const JAIL_TYPE_DEMORGAN = 'demorgan';
+const JAIL_TYPE_PRISON = 'prison';
+// Скин в Деморгане (/ajail)
+const JAIL_SKIN_DEMORGAN = 'ig_rashcosvki';
+// Скин в тюрьме по розыску/наручникам
+const JAIL_SKIN_PRISON = 's_m_y_marine_01';
 
 // Периодическая проверка сроков + тик таймера для клиента
 setInterval(() => {
@@ -1489,14 +1502,14 @@ mp.events.add('playerQuit', (player) => {
     jailMap.delete(player);
     if (player.citizenId != null) {
         if (info) {
-            persistedJails.set(player.citizenId, { release: info.release, reason: info.reason, comment: info.comment || '' });
+            persistedJails.set(player.citizenId, { release: info.release, reason: info.reason, comment: info.comment || '', type: info.type });
         } else if (player.cuffed) {
             // ЛРП: вышел в наручниках — 120 минут Деморгана
             const release = Date.now() + 120 * 60 * 1000;
             const reason = 'LRP';
             const comment = 'Вышел из игры в наручниках';
-            charDb.saveJail(player.citizenId, release, reason, comment);
-            persistedJails.set(player.citizenId, { release, reason, comment });
+            charDb.saveJail(player.citizenId, release, reason, comment, JAIL_TYPE_DEMORGAN);
+            persistedJails.set(player.citizenId, { release, reason, comment, type: JAIL_TYPE_DEMORGAN });
             console.log(`[jail] ${player.name} (id ${player.citizenId}) вышел в наручниках — Demorgan 120 мин (LRP)`);
         }
     }
@@ -1530,8 +1543,8 @@ mp.events.addCommand('ajail', (player, fullText, argId, argMin, ...reasonArgs) =
         return;
     }
     const reason = (reasonArgs || []).join(' ');
-    jailPlayer(target, minutes, reason);
-    player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} посажен на ${minutes} мин${reason ? ` (${reason})` : ''}. Освобождение в ${new Date(Date.now() + minutes * 60000).toLocaleTimeString()}`);
+    jailPlayer(target, minutes, reason, '', JAIL_TYPE_DEMORGAN);
+    player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} посажен в Demorgan на ${minutes} мин${reason ? ` (${reason})` : ''}. Освобождение в ${new Date(Date.now() + minutes * 60000).toLocaleTimeString()}`);
     console.log(`[jail] ${player.name} посадил ${target.name} (id ${target.citizenId}) на ${minutes} мин${reason ? `: ${reason}` : ''}`);
 });
 
@@ -1688,7 +1701,7 @@ mp.events.add('arrest:jail', (player, argId, argMin, argReason, argComment) => {
     try { target.call('star:apply', [0]); } catch (e) { /* ignore */ }
     charDb.removeWanted(target.citizenId);
 
-    jailPlayer(target, minutes, reason || 'Арест', comment);
+    jailPlayer(target, minutes, reason || 'Арест', comment, JAIL_TYPE_PRISON);
     console.log(`[arrest] ${player.name} посадил ${target.name} (id ${target.citizenId}) на ${minutes} мин${reason ? ` | ${reason}` : ''}${comment ? ` | ${comment}` : ''}`);
     player.outputChatBox(`!{44FF44}Игрок ${target.citizenId} посажен в тюрьму на ${minutes} мин. Наручники и розыск сняты.`);
 });
@@ -1747,7 +1760,7 @@ charDb.getPerms((saved) => {
 charDb.getJails((list) => {
     const now = Date.now();
     (list || []).forEach((j) => {
-        if (j.release > now) persistedJails.set(j.citizenId, { release: j.release, reason: j.reason || '', comment: j.comment || '' });
+        if (j.release > now) persistedJails.set(j.citizenId, { release: j.release, reason: j.reason || '', comment: j.comment || '', type: j.jtype || JAIL_TYPE_DEMORGAN });
         else charDb.removeJail(j.citizenId); // срок истёк во время рестарта — чистим
     });
     console.log(`[jail] Активных тюремных записей из БД: ${persistedJails.size}`);
