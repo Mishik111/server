@@ -4,3 +4,5 @@ require('./cuff/index.js');
 require('./admin/index.js');
 require('./casino/index.js');
 require('./charcreator/index.js');
+require('./drone/index.js');
+require('./hud/index.js');

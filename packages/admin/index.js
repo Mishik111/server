@@ -209,6 +209,7 @@ mp.events.addCommand('help', (player) => {
     player.outputChatBox('!{FFFF00}/reset !{FFFFFF}- изменить внешность и имя персонажа');
     player.outputChatBox('!{FFFF00}/perm !{FFFFFF}- меню полномочий (для главного админа, id=1)');
     player.outputChatBox('!{FFFF00}/money !{FFFFFF}- баланс ($ и фишки)');
+    player.outputChatBox('!{FFFF00}/fpv !{FFFFFF}- запустить FPV дрон (управление: WASD, Шифт/Ctrl, выход: /fpv или Backspace)');
     player.outputChatBox('!{FFFF00}/pay [id] [сумма] !{FFFFFF}- перевести деньги игроку');
     player.outputChatBox('!{FFFF00}/bet [id] [сумма] !{FFFFFF}- вызвать игрока на дуэль костей (принять: /yes)');
     player.outputChatBox('!{FFFF00}/casino !{FFFFFF}- казино: маркер на карте, клавиша E у маркера');

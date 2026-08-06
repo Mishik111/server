@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>HUD</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800;900&family=Rajdhani:wght@600;700&family=Inter:wght@500;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent !important;
+            background-color: transparent !important;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            user-select: none;
+            pointer-events: none;
+        }
+
+        /* --- Top Right Panel (Player ID, Money, Chips) --- */
+        #top-hud {
+            position: fixed;
+            top: 20px;
+            right: 25px;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 10px;
+            z-index: 1000;
+        }
+
+        .hud-card {
+            background: rgba(12, 16, 26, 0.75);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-right: 3px solid #ff8800;
+            border-radius: 12px;
+            padding: 10px 18px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            transition: all 0.3s ease;
+        }
+
+        .id-badge {
+            background: linear-gradient(135deg, rgba(255, 136, 0, 0.25) 0%, rgba(255, 70, 0, 0.15) 100%);
+            border: 1px solid rgba(255, 136, 0, 0.4);
+            border-radius: 8px;
+            padding: 4px 10px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 13px;
+            font-weight: 800;
+            color: #ffaa33;
+            letter-spacing: 1px;
+            text-shadow: 0 0 10px rgba(255, 170, 51, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .id-badge svg {
+            width: 14px;
+            height: 14px;
+            fill: #ffaa33;
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .stat-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .stat-icon.money {
+            background: rgba(46, 204, 113, 0.15);
+            border: 1px solid rgba(46, 204, 113, 0.3);
+            color: #2ecc71;
+        }
+
+        .stat-icon.chips {
+            background: rgba(241, 196, 15, 0.15);
+            border: 1px solid rgba(241, 196, 15, 0.3);
+            color: #f1c40f;
+        }
+
+        .stat-icon svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+
+        .stat-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-label {
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        .stat-value {
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 20px;
+            font-weight: 700;
+            line-height: 1;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value.money {
+            color: #2ecc71;
+            text-shadow: 0 0 12px rgba(46, 204, 113, 0.4);
+        }
+
+        .stat-value.chips {
+            color: #f1c40f;
+            text-shadow: 0 0 12px rgba(241, 196, 15, 0.4);
+        }
+
+        /* --- Bottom Right Speedometer --- */
+        #speedo {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: rgba(12, 16, 26, 0.82);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 16px 24px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            opacity: 0;
+            transform: translateY(20px) scale(0.95);
+            transition: all 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 1000;
+        }
+
+        #speedo.visible {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+
+        .speed-main {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .speed-val {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 38px;
+            font-weight: 900;
+            color: #ffffff;
+            line-height: 1;
+            text-shadow: 0 0 16px rgba(255, 255, 255, 0.3);
+        }
+
+        .speed-unit {
+            font-size: 10px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: rgba(255, 255, 255, 0.45);
+            margin-top: 4px;
+        }
+
+        .speed-divider {
+            width: 1px;
+            height: 40px;
+            background: rgba(255, 255, 255, 0.12);
+        }
+
+        .speed-details {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .gear-badge {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 14px;
+            font-weight: 800;
+            color: #ffaa33;
+            background: rgba(255, 170, 51, 0.15);
+            border: 1px solid rgba(255, 170, 51, 0.3);
+            border-radius: 6px;
+            padding: 2px 8px;
+            text-align: center;
+            letter-spacing: 1px;
+        }
+
+        .fuel-bar-wrap {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .fuel-icon {
+            width: 12px;
+            height: 12px;
+            fill: rgba(255, 255, 255, 0.5);
+        }
+
+        .fuel-bg {
+            width: 80px;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .fuel-fill {
+            height: 100%;
+            width: 100%;
+            background: linear-gradient(90deg, #3498db 0%, #2ecc71 100%);
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+
+        .fuel-text {
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 13px;
+            font-weight: 700;
+            color: rgba(255, 255, 255, 0.7);
+            min-width: 38px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Top Right ID & Balance HUD -->
+    <div id="top-hud">
+        <div class="hud-card">
+            <div class="id-badge">
+                <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                ID <span id="player-id">1</span>
+            </div>
+
+            <div class="stat-item">
+                <div class="stat-icon money">
+                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 14h-2v-1c-1.66 0-3-1.34-3-3h2c0 .55.45 1 1 1h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-1.66 0-3-1.34-3-3s1.34-3 3-3v-1h2v1c1.66 0 3 1.34 3 3h-2c0-.55-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1h2c1.66 0 3 1.34 3 3s-1.34 3-3 3v1z"/></svg>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-label">Баланс</span>
+                    <span class="stat-value money" id="money-val">$ 0</span>
+                </div>
+            </div>
+
+            <div class="stat-item">
+                <div class="stat-icon chips">
+                    <svg viewBox="0 0 24 24"><path d="M12 2A10 10 0 1 0 22 12 A10 10 0 0 0 12 2zm0 3a7 7 0 1 1-7 7 7 7 0 0 1 7-7zm0 3a4 4 0 1 0 4 4 4 4 0 0 0-4-4z"/></svg>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-label">Фишки</span>
+                    <span class="stat-value chips" id="chips-val">0</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Right Speedometer -->
+    <div id="speedo">
+        <div class="speed-main">
+            <div class="speed-val" id="speed-num">0</div>
+            <div class="speed-unit">КМ / Ч</div>
+        </div>
+        <div class="speed-divider"></div>
+        <div class="speed-details">
+            <div class="gear-badge" id="gear-val">N</div>
+            <div class="fuel-bar-wrap">
+                <svg class="fuel-icon" viewBox="0 0 24 24"><path d="M19.77 7.23l.01-.01-3.72-3.72L15 4.56l2.11 2.11c-.94.36-1.61 1.26-1.61 2.33 0 1.38 1.12 2.5 2.5 2.5.36 0 .69-.08 1-.22v5.72c0 .55-.45 1-1 1s-1-.45-1-1V14c0-1.1-.9-2-2-2h-1V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h6c1.1 0 2-.9 2-2v-5h1v3.5c0 1.93 1.57 3.5 3.5 3.5s3.5-1.57 3.5-3.5V9c0-0.7-.29-1.33-.73-1.77zM11 10H5V5h6v5z"/></svg>
+                <div class="fuel-bg">
+                    <div class="fuel-fill" id="fuel-bar" style="width: 100%;"></div>
+                </div>
+                <span class="fuel-text" id="fuel-num">100L</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function fmt(n) {
+            return Number(n || 0).toLocaleString('ru-RU');
+        }
+
+        window.__updateHud = function (d) {
+            if (!d) return;
+            if (d.id != null) document.getElementById('player-id').textContent = d.id;
+            if (d.money != null) document.getElementById('money-val').textContent = '$ ' + fmt(d.money);
+            if (d.chips != null) document.getElementById('chips-val').textContent = fmt(d.chips);
+
+            var sp = document.getElementById('speedo');
+            if (d.inVeh) {
+                sp.classList.add('visible');
+                document.getElementById('speed-num').textContent = d.speed || 0;
+                document.getElementById('gear-val').textContent = d.gear || 'N';
+                var f = Math.max(0, Math.min(100, Number(d.fuel || 100)));
+                document.getElementById('fuel-bar').style.width = f + '%';
+                document.getElementById('fuel-num').textContent = f.toFixed(0) + 'L';
+            } else {
+                sp.classList.remove('visible');
+            }
+        };
+    </script>
+</body>
+</html>

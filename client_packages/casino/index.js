@@ -102,10 +102,6 @@ mp.events.add('render', () => {
                 mp.game.graphics.drawMarker(4, CASINO_POS.x, CASINO_POS.y, CASINO_POS.z + 0.05, 0, 0, 0, 0, 0, 0, 2.2, 2.2, 0.3, 120, 255, 80, 220, false, false, 2, false, null, null, false);
             }
         }
-        // HUD баланса: справа, чуть выше миникарты
-        if (casinoMoney > 0 || casinoChips > 0) {
-            drawTextRow(0.84, 0.615, `$ ${casinoMoney}`, [255, 215, 0, 255], 0.45);
-            drawTextRow(0.84, 0.645, `Фишки: ${casinoChips}`, [120, 255, 120, 255], 0.4);
-        }
+        // HUD баланса теперь через CEF (hud/index.html)
     } catch (e) { /* ignore */ }
 });

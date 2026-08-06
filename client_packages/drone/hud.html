@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>FPV Drone HUD</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent !important;
+            background-color: transparent !important;
+            font-family: 'Share Tech Mono', monospace;
+            color: #00ffcc;
+            user-select: none;
+            pointer-events: none;
+        }
+
+        /* --- FPV Screen Vignette & Scanlines --- */
+        .fpv-vignette {
+            position: fixed;
+            inset: 0;
+            background: radial-gradient(circle, transparent 55%, rgba(0, 10, 20, 0.75) 100%);
+            box-shadow: inset 0 0 100px rgba(0, 255, 200, 0.08);
+            z-index: 1;
+        }
+
+        .scanlines {
+            position: fixed;
+            inset: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%);
+            background-size: 100% 4px;
+            z-index: 2;
+            opacity: 0.6;
+        }
+
+        /* --- Corner Tactical Brackets --- */
+        .corner {
+            position: fixed;
+            width: 40px;
+            height: 40px;
+            border: 2px solid rgba(0, 255, 204, 0.4);
+            z-index: 10;
+        }
+        .tl { top: 30px; left: 30px; border-right: none; border-bottom: none; }
+        .tr { top: 30px; right: 30px; border-left: none; border-bottom: none; }
+        .bl { bottom: 30px; left: 30px; border-right: none; border-top: none; }
+        .br { bottom: 30px; right: 30px; border-left: none; border-top: none; }
+
+        /* --- Top Center Status Badge --- */
+        #top-bar {
+            position: fixed;
+            top: 35px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(4, 16, 24, 0.85);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(0, 255, 204, 0.3);
+            border-radius: 12px;
+            padding: 10px 24px;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            box-shadow: 0 0 20px rgba(0, 255, 204, 0.15);
+            z-index: 10;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 1.5px;
+            color: #00ffcc;
+        }
+
+        .rec-dot {
+            width: 10px;
+            height: 10px;
+            background: #ff3366;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #ff3366;
+            animation: blink 1s infinite alternate;
+        }
+
+        @keyframes blink {
+            from { opacity: 1; }
+            to { opacity: 0.2; }
+        }
+
+        .tele-group {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .tele-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .tele-label {
+            font-size: 9px;
+            color: rgba(0, 255, 204, 0.6);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .tele-val {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 18px;
+            font-weight: 700;
+            color: #ffffff;
+            text-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
+        }
+
+        /* --- Battery Meter --- */
+        .battery-wrap {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .battery-box {
+            width: 44px;
+            height: 14px;
+            border: 1px solid rgba(0, 255, 204, 0.6);
+            border-radius: 3px;
+            padding: 2px;
+            display: flex;
+            gap: 2px;
+        }
+
+        .bat-seg {
+            flex: 1;
+            height: 100%;
+            background: #00ffcc;
+            border-radius: 1px;
+            transition: background 0.3s;
+        }
+
+        .bat-seg.off { background: transparent; }
+        .bat-seg.warn { background: #ffaa00; }
+        .bat-seg.crit { background: #ff3366; }
+
+        /* --- Center Crosshair & Horizon --- */
+        #crosshair-wrap {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 200px;
+            height: 200px;
+            pointer-events: none;
+            z-index: 5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .reticle {
+            position: absolute;
+            width: 24px;
+            height: 24px;
+            border: 2px solid rgba(0, 255, 204, 0.7);
+            border-radius: 50%;
+            box-shadow: 0 0 12px rgba(0, 255, 204, 0.4);
+        }
+
+        .reticle-dot {
+            width: 4px;
+            height: 4px;
+            background: #00ffcc;
+            border-radius: 50%;
+            box-shadow: 0 0 8px #00ffcc;
+        }
+
+        .horizon-line {
+            position: absolute;
+            width: 120px;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, rgba(0, 255, 204, 0.8) 20%, rgba(0, 255, 204, 0.8) 80%, transparent);
+            box-shadow: 0 0 8px rgba(0, 255, 204, 0.5);
+            transition: transform 0.05s linear;
+        }
+
+        /* --- Bottom Control Bar --- */
+        #bottom-bar {
+            position: fixed;
+            bottom: 35px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(4, 16, 24, 0.85);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(0, 255, 204, 0.3);
+            border-radius: 30px;
+            padding: 8px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            box-shadow: 0 0 20px rgba(0, 255, 204, 0.15);
+            z-index: 10;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+            color: rgba(255, 255, 255, 0.85);
+        }
+
+        .key-badge {
+            background: rgba(0, 255, 204, 0.15);
+            border: 1px solid rgba(0, 255, 204, 0.4);
+            border-radius: 5px;
+            padding: 2px 7px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+            font-weight: 700;
+            color: #00ffcc;
+        }
+
+        /* --- Static Glitch Overlay on Explosion --- */
+        #glitch-canvas {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 99;
+            display: none;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="fpv-vignette"></div>
+    <div class="scanlines"></div>
+
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+
+    <!-- Top Telemetry Bar -->
+    <div id="top-bar">
+        <div class="status-badge">
+            <div class="rec-dot"></div>
+            FPV HD FEED
+        </div>
+
+        <div class="tele-group">
+            <div class="tele-item">
+                <span class="tele-label">Скорость</span>
+                <span class="tele-val" id="val-speed">0 KM/H</span>
+            </div>
+            <div class="tele-item">
+                <span class="tele-label">Высота</span>
+                <span class="tele-val" id="val-alt">0 M</span>
+            </div>
+            <div class="tele-item">
+                <span class="tele-label">Батарея</span>
+                <div class="battery-wrap">
+                    <div class="battery-box" id="bat-box">
+                        <div class="bat-seg"></div>
+                        <div class="bat-seg"></div>
+                        <div class="bat-seg"></div>
+                        <div class="bat-seg"></div>
+                    </div>
+                    <span class="tele-val" id="val-bat">100%</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Center Reticle & Horizon -->
+    <div id="crosshair-wrap">
+        <div class="horizon-line" id="horizon"></div>
+        <div class="reticle"></div>
+        <div class="reticle-dot"></div>
+    </div>
+
+    <!-- Bottom Controls -->
+    <div id="bottom-bar">
+        <span><span class="key-badge">WASD</span> Полёт</span>
+        <span>·</span>
+        <span><span class="key-badge">Space / Ctrl</span> Высота</span>
+        <span>·</span>
+        <span><span class="key-badge">Shift</span> Ускорение</span>
+        <span>·</span>
+        <span><span class="key-badge">E</span> Взорвать</span>
+        <span>·</span>
+        <span><span class="key-badge">Backspace</span> Выход</span>
+    </div>
+
+    <canvas id="glitch-canvas"></canvas>
+
+    <script>
+        window.__updateDrone = function(speed, alt, battery, pitch, roll) {
+            document.getElementById('val-speed').textContent = (speed || 0) + ' KM/H';
+            document.getElementById('val-alt').textContent = (alt || 0) + ' M';
+            
+            var batVal = Math.max(0, Math.min(100, battery || 100));
+            document.getElementById('val-bat').textContent = batVal + '%';
+
+            var segs = document.querySelectorAll('.bat-seg');
+            var activeCount = Math.ceil(batVal / 25);
+            segs.forEach(function(s, idx) {
+                s.className = 'bat-seg';
+                if (idx >= activeCount) {
+                    s.classList.add('off');
+                } else if (batVal <= 25) {
+                    s.classList.add('crit');
+                } else if (batVal <= 50) {
+                    s.classList.add('warn');
+                }
+            });
+
+            // Rotate horizon line
+            var hor = document.getElementById('horizon');
+            if (hor) {
+                hor.style.transform = 'rotate(' + (roll || 0) + 'deg) translateY(' + (pitch || 0) * 0.5 + 'px)';
+            }
+        };
+
+        window.__triggerGlitch = function() {
+            var canvas = document.getElementById('glitch-canvas');
+            if (!canvas) return;
+            canvas.style.display = 'block';
+            var ctx = canvas.getContext('2d');
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            var frames = 0;
+            var interval = setInterval(function() {
+                frames++;
+                var imgData = ctx.createImageData(canvas.width, canvas.height);
+                var buffer = new Uint32Array(imgData.data.buffer);
+                for (var i = 0; i < buffer.length; i++) {
+                    if (Math.random() < 0.5) buffer[i] = 0xffffffff;
+                    else buffer[i] = 0xff000000;
+                }
+                ctx.putImageData(imgData, 0, 0);
+
+                if (frames > 15) {
+                    clearInterval(interval);
+                    canvas.style.display = 'none';
+                }
+            }, 30);
+        };
+    </script>
+</body>
+</html>
