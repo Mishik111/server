@@ -1119,18 +1119,18 @@ let _trafficHeightPending = {};
 
 const _trafficReqId = () => Math.floor(Math.random() * 2147483647);
 
-const getGroundZFromClient = (player, x, y, z) => {
+const getRoadDataFromClient = (player, x, y, z, isVehicle = false) => {
     return new Promise((resolve) => {
         const reqId = _trafficReqId();
         _trafficHeightPending[reqId] = { resolve, timeout: setTimeout(() => { delete _trafficHeightPending[reqId]; resolve(null); }, 1500) };
-        try { player.call('c:getTrafficGroundZ', [{ reqId, x, y, z }]); } catch (e) { resolve(null); }
+        try { player.call('c:getTrafficGroundZ', [{ reqId, x, y, z, isVehicle }]); } catch (e) { resolve(null); }
     });
 };
 
-mp.events.add('c:trafficGroundZResult', (player, reqId, groundZ) => {
+mp.events.add('c:trafficGroundZResult', (player, reqId, resObj) => {
     if (_trafficHeightPending[reqId]) {
         clearTimeout(_trafficHeightPending[reqId].timeout);
-        _trafficHeightPending[reqId].resolve(groundZ);
+        _trafficHeightPending[reqId].resolve(resObj);
         delete _trafficHeightPending[reqId];
     }
 }); 
@@ -1166,8 +1166,8 @@ const trafficSpawnPed = async (pos, dim) => {
     try {
         const owner = trafficData.owner;
         if (owner && mp.players.exists(owner)) {
-            const gz = await getGroundZFromClient(owner, baseX, baseY, pos.z);
-            if (gz !== null) spawnZ = gz;
+            const res = await getRoadDataFromClient(owner, baseX, baseY, pos.z, false);
+            if (res && res.z !== null && res.z !== undefined) spawnZ = res.z;
         }
     } catch (e) {}
     
@@ -1180,31 +1180,37 @@ const trafficSpawnPed = async (pos, dim) => {
     } catch (e) {}
 };
 
-// Спавн машины с водителем (асинхронный — получает высоту земли у клиента)
+// Спавн машины с водителем (асинхронный — ищет ближайшую дорогу и высоту у клиента)
 const trafficSpawnVehicle = async (pos, dim) => {
     const model = TRAFFIC_CAR_MODELS[Math.floor(Math.random() * TRAFFIC_CAR_MODELS.length)];
     const a = Math.random() * Math.PI * 2;
     const r = 35 + Math.random() * 55; // Спавним ближе к игроку (35-90 м)
-    const baseX = pos.x + Math.cos(a) * r;
-    const baseY = pos.y + Math.sin(a) * r;
-    
+    let baseX = pos.x + Math.cos(a) * r;
+    let baseY = pos.y + Math.sin(a) * r;
     let spawnZ = pos.z;
+    let heading = Math.random() * 360;
+
     try {
         const owner = trafficData.owner;
         if (owner && mp.players.exists(owner)) {
-            const gz = await getGroundZFromClient(owner, baseX, baseY, pos.z);
-            if (gz !== null) spawnZ = gz;
+            const res = await getRoadDataFromClient(owner, baseX, baseY, pos.z, true);
+            if (res && res.z !== null && res.z !== undefined) {
+                spawnZ = res.z;
+                if (res.x != null) baseX = res.x;
+                if (res.y != null) baseY = res.y;
+                if (res.heading != null) heading = res.heading;
+            }
         }
     } catch (e) {}
     
     const p = new mp.Vector3(baseX, baseY, spawnZ);
 
     try {
-        const veh = mp.vehicles.new(mp.joaat(model), p, { heading: Math.random() * 360, dimension: dim });
+        const veh = mp.vehicles.new(mp.joaat(model), p, { heading: heading, dimension: dim });
         veh.engine = true;
         trafficSpawned.add(veh);
 
-        const driver = mp.peds.new(mp.joaat('a_m_y_hipster_01'), p, { heading: 0, dimension: dim });
+        const driver = mp.peds.new(mp.joaat('a_m_y_hipster_01'), p, { heading: heading, dimension: dim });
         
         // Синхронизируем связь водителя и авто с клиентом
         driver.setVariable('trafficType', 'driver');

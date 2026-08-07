@@ -611,15 +611,37 @@ mp.events.add('c:setTrafficDensity', (density) => {
     trafficDensity = density;
 });
 
-// ---------- Получение высоты земли для серверного спавна трафика ----------
+// ---------- Получение высоты земли и дороги для серверного спавна трафика ----------
 mp.events.add('c:getTrafficGroundZ', (data) => {
-    const { reqId, x, y, z: fakeZ } = data;
-    const groundZ = mp.game.gameplay.getGroundZFor3dCoord(x, y, fakeZ || 1000, 0, false);
-    if (!groundZ || !Number.isFinite(groundZ)) {
+    const { reqId, x, y, z: fakeZ, isVehicle } = data;
+    let targetX = x;
+    let targetY = y;
+    let groundZ = null;
+    let heading = Math.random() * 360;
+
+    if (isVehicle) {
+        try {
+            // Ищем ближайший узел дороги и направление
+            const road = mp.game.pathfind.getClosestVehicleNodeWithHeading(x, y, fakeZ || 1000, 1, 3.0, 0);
+            if (road && road.position && (road.position.x !== 0 || road.position.y !== 0)) {
+                targetX = road.position.x;
+                targetY = road.position.y;
+                groundZ = road.position.z;
+                if (typeof road.heading === 'number') heading = road.heading;
+            }
+        } catch (e) {}
+    }
+
+    if (groundZ === null || !Number.isFinite(groundZ)) {
+        groundZ = mp.game.gameplay.getGroundZFor3dCoord(targetX, targetY, fakeZ || 1000, 0, false);
+    }
+
+    if (groundZ === null || !Number.isFinite(groundZ)) {
         mp.events.callRemote('c:trafficGroundZResult', reqId, null);
         return;
     }
-    mp.events.callRemote('c:trafficGroundZResult', reqId, groundZ);
+
+    mp.events.callRemote('c:trafficGroundZResult', reqId, { z: groundZ, x: targetX, y: targetY, heading: heading });
 });
 
 mp.events.add('entityStreamIn', (entity) => {
@@ -631,30 +653,30 @@ mp.events.add('entityStreamIn', (entity) => {
     if (trafficType === 'driver') {
         const vehId = entity.getVariable('trafficVehId');
         
-        // Водителя в машину сажает СЕРВЕР (putIntoVehicle с задержкой 250 мс).
-        // Клиент: дожидаемся, пока пед реально окажется в авто (может застримиться
-        // раньше, чем сервер посадит), и только потом запускаем езду.
+        // Водителя в машину сажаем принудительно на клиенте + запускаем езду
         const findVehicle = (retries = 0) => {
             if (!entity || !entity.handle) return;
             const veh = mp.vehicles.atRemoteId(vehId);
             if (!veh || !veh.handle) {
-                if (retries < 12) setTimeout(() => findVehicle(retries + 1), 200);
+                if (retries < 25) setTimeout(() => findVehicle(retries + 1), 150);
                 return;
             }
-            waitSeatedAndDrive(veh);
+            putInVehAndDrive(veh);
         };
 
-        const waitSeatedAndDrive = (veh, attempt = 0) => {
+        const putInVehAndDrive = (veh, attempt = 0) => {
             if (!entity || !entity.handle || !veh || !veh.handle) return;
+            
+            try {
+                mp.game.vehicle.setVehicleEngineOn(veh.handle, true, true, false);
+                mp.game.ped.setPedIntoVehicle(entity.handle, veh.handle, -1); // -1 = водительское сиденье
+                mp.game.ai.taskVehicleDriveWander(entity.handle, veh.handle, 18.0, 786603);
+            } catch (e) {}
+
             let inVeh = false;
-            try { inVeh = mp.game.ped.isPedInAnyVehicle(entity.handle, true); } catch (e) { inVeh = false; }
-            if (inVeh) {
-                try {
-                    mp.game.ped.setPedIntoVehicle(entity.handle, veh.handle, -1);
-                    mp.game.ai.taskVehicleDriveWander(entity.handle, veh.handle, 18.0, 786603);
-                } catch (e) { /* ignore */ }
-            } else if (attempt < 15) {
-                setTimeout(() => waitSeatedAndDrive(veh, attempt + 1), 100);
+            try { inVeh = mp.game.ped.isPedInVehicle(entity.handle, veh.handle, false); } catch (e) {}
+            if (!inVeh && attempt < 15) {
+                setTimeout(() => putInVehAndDrive(veh, attempt + 1), 150);
             }
         };
 
