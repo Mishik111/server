@@ -644,21 +644,33 @@ mp.events.add('c:getTrafficGroundZ', (data) => {
     mp.events.callRemote('c:trafficGroundZResult', reqId, { z: groundZ, x: targetX, y: targetY, heading: heading });
 });
 
-mp.events.add('entityStreamIn', (entity) => {
-    if (trafficDensity <= 0 || entity.type !== 'ped') return;
+const activateTrafficEntity = (entity) => {
+    if (trafficDensity <= 0 || !entity || entity.type !== 'ped' || !entity.handle) return;
 
     const trafficType = entity.getVariable('trafficType');
     if (!trafficType) return; // Не наш трафик-бот
 
+    // Чтобы не запускать дважды
+    if (entity._trafficActivated) return;
+    entity._trafficActivated = true;
+
     if (trafficType === 'driver') {
         const vehId = entity.getVariable('trafficVehId');
+        if (vehId === undefined || vehId === null) {
+            entity._trafficActivated = false; // Попробуем позже, когда придет vehId
+            return;
+        }
         
         // Водителя в машину сажаем принудительно на клиенте + запускаем езду
         const findVehicle = (retries = 0) => {
             if (!entity || !entity.handle) return;
-            const veh = mp.vehicles.atRemoteId(vehId);
+            const veh = mp.vehicles.toArray().find(v => v.remoteId === vehId);
             if (!veh || !veh.handle) {
-                if (retries < 25) setTimeout(() => findVehicle(retries + 1), 150);
+                if (retries < 35) {
+                    setTimeout(() => findVehicle(retries + 1), 150);
+                } else {
+                    entity._trafficActivated = false; // Сбросим, чтобы можно было перезапустить при событии
+                }
                 return;
             }
             putInVehAndDrive(veh);
@@ -684,8 +696,20 @@ mp.events.add('entityStreamIn', (entity) => {
 
     } else if (trafficType === 'ped') {
         // Запуск ходьбы для обычных пешеходов
-        const p = entity.position;
-        mp.game.ai.taskWanderInArea(entity.handle, p.x, p.y, p.z, 40.0, 1.0, 1.0);
+        try {
+            const p = entity.position;
+            mp.game.ai.taskWanderInArea(entity.handle, p.x, p.y, p.z, 40.0, 1.0, 1.0);
+        } catch (e) {}
+    }
+};
+
+mp.events.add('entityStreamIn', (entity) => {
+    activateTrafficEntity(entity);
+});
+
+mp.events.add('entityDataChange', (entity, key, value) => {
+    if (key === 'trafficType' || key === 'trafficVehId') {
+        activateTrafficEntity(entity);
     }
 });
 
