@@ -24,6 +24,8 @@ packages/
   admin/cuff.js          Наручники, поводок (/6 /7, /put)
   casino/index.js        Казино, дуэль костей (/bet /yes)
   rp/index.js            РП-действия (/me /do /try /roll)
+  houses/index.js        Дома: /hcreate /hbuy /hsell /hinfo /hlist /hdel, интерьеры
+  teleports/index.js     Телепорт-маркеры: /tpmark /tptarget /tplist /tpdel
 client_packages/
   index.js               Бандл: подключает все модули ниже
   admin/index.js         Админ-клиент: спектатор, ноклип, трафик, спидометр, тест-авто
@@ -33,6 +35,8 @@ client_packages/
   nametags.js            Ручная отрисовка имён над головами
   cuff/index.js          Клиент наручников (анимации, скорость)
   casino/index.html/.js  CEF казино
+  houses/index.js        Клиент домов: «портал» двери, маркер выхода, блобы
+  teleports/index.js     Клиент телепортов: фиолетовые маркеры, E у маркера
   charcreator/           CEF создания персонажа (имя, внешность)
   game_resources/dlcpacks/  DLC-авто (13 пакетов) + dlc.list
 conf.json                Порт, имя, stream-distance
@@ -42,7 +46,7 @@ conf.json                Порт, имя, stream-distance
 
 - Внутренний ID игрока — `p.citizenId` (из БД), НЕ `p.id` RAGE:MP.
 - Поиск: `getPlayerById(id)` в `packages/admin/index.js:2`.
-- `HEAD_ADMIN_ID = 1` — главный админ, получает все права автоматически.
+- `HEAD_ADMIN_ID = 2` — главный админ, получает все права автоматически.
 - Права: реестр `CMD_LABELS` + `hasPerm(player, cmd)` (`packages/admin/index.js:60`).
   Остальным админам права выдаёт главный админ через `/perm`.
 
@@ -56,9 +60,26 @@ conf.json                Порт, имя, stream-distance
 /ajail [id] [мин] [причина] /unjail /dunjail /auncuff /star [id] [звёзды] /orm /unorm
 /traffic [0-100] /trafic    NPC-трафик (серверный спавн, видят все)
 /perm /reset /bind          меню прав; сброс персонажа; привязка клавиши к командам
+/hcreate [цена] [название] /hdel [id] /hsetint [id] /hint [id] [n] /hints
+                        создать/удалить дом, сохранить интерьер вручную, готовый интерьер (право house)
+/tpmark [название] /tptarget [название] /tplist /tpdel [id]
+                        телепорт-маркеры: поставить маркер, задать цель, список, удалить (право teleport)
 ```
 
 Игроки: `/money /pay /bet /yes /casino /buy /sell /me /do /try /roll /respawn (R)`.
+Дома: `/hbuy` (купить ближайший свободный), `/hsell` (продать свой, возврат 80%),
+`/hinfo` (ближайший), `/myhouse` (свои), `/hlist` (все), `/home` (к двери своего),
+`/exit` (выход из дома). Дома и их владельцы хранятся в БД (таблица `houses`).
+Вход в дом — клавиша E у вертикального «портала» двери (только владелец), выход — E
+у жёлтого круга внутри (или `/exit`). Каждый игрок внутри находится в своей
+дименсии (`100000 + citizenId`) — интерьеры не пересекаются. Интерьеры: готовые
+пресеты `/hint` (лофт-апартаменты mp_apa_01-06, дома Майкла/тёти Франклина/трейлер
+Тревора) или свой через `/hsetint`. Блобы на радаре + маркеры в мире рисует клиент.
+
+Телепорты (двусторонние): `/tpmark [название]` ставит фиолетовый маркер в точке
+игрока, `/tptarget [название]` задаёт точку назначения. Маркеры ставятся на обеих
+точках; игрок подходит к любому и жмёт E (или `/tpuse [id]`) — телепорт на другой
+конец. Данные в БД (таблица `teleports`).
 
 ## Ключевые конвенции
 

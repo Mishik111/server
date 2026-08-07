@@ -911,35 +911,6 @@ mp.events.add('render', () => {
         }
     }
 
-    // ---------- Спидометр (справа снизу, если в машине) ----------
-    if (player.vehicle && player.getHealth() > 0) {
-        try {
-            const veh = player.vehicle;
-            const kmh = Math.round(Math.abs(veh.getSpeed() * 3.6));
-            // Скорость крупно
-            drawTextRow(0.95, 0.885, `${kmh} км/ч`, [255, 255, 255, 255], 1.2);
-            // Передача + топливо мелкой строкой
-            let sub = '';
-            const gear = veh.gear;
-            if (gear != null) {
-                if (gear === 0 && Math.abs(veh.getSpeed()) > 0.5) sub += 'R';
-                else if (gear === 0) sub += 'N';
-                else sub += gear;
-            }
-            let fuel = null;
-            const info = veh.remoteId != null ? vehInfo.get(veh.remoteId) : null;
-            if (info) fuel = info.fuel;
-            if (typeof veh.getVariable === 'function' && fuel == null) {
-                try { fuel = veh.getVariable('fuel'); } catch (e) { /* ignore */ }
-            }
-            if (fuel != null) {
-                if (sub) sub += ' · ';
-                sub += `${Number(fuel).toFixed(1)} л`;
-            }
-            if (sub) drawTextRow(0.95, 0.93, sub, [150, 200, 255, 255], 0.45);
-        } catch (e) { /* ignore */ }
-    }
-
     if (!noclip) return;
 
     // Клавиши движения читаем обычным isControlPressed (перемещение делаем
@@ -1114,7 +1085,8 @@ mp.events.add('orm:stop', ormClear);
 
 // ---------- Бинды клавиш (/bind) ----------
 // Привязка цепочки команд к клавише: /bind a /fly;/givemoney 100 —
-// нажатие 'a' выполнит обе команды. Хранятся на клиенте (mp.storage).
+// нажатие 'a' выполнит обе команды. Хранятся на клиенте (mp.storage) и на
+// сервере (БД, таблица binds) — переживают перезаход и рестарт сервера.
 const BIND_STORAGE_KEY = 'adminKeyBinds';
 const RESERVED_VK = { 0x1B: 1, 0x54: 1, 0x52: 1, 0x4A: 1, 0x45: 1, 0x74: 1 }; // ESC, T, R, J, E, F5
 
@@ -1147,6 +1119,7 @@ const saveBinds = () => {
     try {
         const arr = Object.keys(keyBinds).map((vk) => [Number(vk), keyBinds[vk]]);
         mp.storage.set(BIND_STORAGE_KEY, JSON.stringify(arr));
+        mp.events.callRemote('binds:save', JSON.stringify(keyBinds));
     } catch (e) { /* ignore */ }
 };
 
@@ -1177,6 +1150,32 @@ const applyBind = (vk) => {
 
 loadBinds();
 Object.keys(keyBinds).forEach((vk) => applyBind(vk));
+
+// Бинды с сервера (приходят после playerReady) — источник истины на сервере,
+// переживают перезаход и рестарт. Если на сервере пусто — отправляем свои,
+// чтобы сохранить их там (миграция с локального mp.storage).
+mp.events.add('binds:load', (json) => {
+    let binds = {};
+    try { binds = JSON.parse(json); } catch (e) { binds = {}; }
+    if (!binds || typeof binds !== 'object' || Array.isArray(binds)) return;
+    const incoming = {};
+    Object.keys(binds).forEach((vk) => {
+        const num = Number(vk);
+        if (Number.isInteger(num) && binds[vk]) incoming[num] = String(binds[vk]);
+    });
+    if (Object.keys(incoming).length === 0) {
+        try { mp.events.callRemote('binds:save', JSON.stringify(keyBinds)); } catch (e) { /* ignore */ }
+        return;
+    }
+    keyBinds = incoming;
+    Object.keys(keyBinds).forEach((vk) => applyBind(vk));
+    saveBinds();
+});
+
+// Запрашиваем свои бинды у сервера, как только клиент готов
+mp.events.add('playerReady', () => {
+    mp.events.callRemote('binds:request');
+});
 
 // /bind, /unbind, /binds обрабатываются на клиенте (серверу такие команды не нужны)
 mp.events.add('playerCommand', (command) => {

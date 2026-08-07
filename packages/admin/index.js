@@ -55,7 +55,7 @@ mp.events.addCommand = function (cmdName, handler) {
 
 // ---------- Полномочия ----------
 const charDb = require('../freeroam/char-db.js');
-const HEAD_ADMIN_ID = 1; // главный админ (гражданский id из БД)
+const HEAD_ADMIN_ID = 2; // главный админ (гражданский id из БД)
 const perms = new Map(); // citizenId -> { cmd: true }
 const CMD_LABELS = [
     ['veh', 'Спавн авто'],
@@ -97,7 +97,9 @@ const CMD_LABELS = [
     ['cid', 'ID машины (/cid)'],
     ['inc', 'Сесть в машину (/inc)'],
     ['mtp', 'Телепорт к метке (/mtp)'],
-    ['money', 'Деньги и фишки (/givemoney, /givechips)']
+    ['money', 'Деньги и фишки (/givemoney, /givechips)'],
+    ['house', 'Дома (/hcreate, /hdel)'],
+    ['teleport', 'Телепорт-маркеры (/tpmark, /tptarget)']
 ];
 const hasPerm = (player, cmd) => {
     if (player.citizenId === HEAD_ADMIN_ID) return true;
@@ -153,6 +155,11 @@ mp.events.add('playerReady', (player) => {
                 player.outputChatBox(`!{FF4444}Вы всё ещё в розыске (${w.stars} зв.)${w.reason ? `: ${w.reason}` : ''}!`);
             }
         }
+        // Вернуть бинды клавиш после рестарта/перезахода (хранение на сервере в БД)
+        charDb.getBinds(player.citizenId, (binds) => {
+            if (!player || player.citizenId == null) return;
+            try { player.call('binds:load', [JSON.stringify(binds || {})]); } catch (e) { /* ignore */ }
+        });
     }
 });
 
@@ -217,6 +224,18 @@ mp.events.addCommand('help', (player) => {
     player.outputChatBox('!{FFFF00}/buy [n] /sell [n] !{FFFFFF}- обмен $ на фишки и обратно (в зоне казино)');
     player.outputChatBox('!{FFFF00}/givemoney [id] [сумма] !{FFFFFF}- админ: выдать/снять деньги');
     player.outputChatBox('!{FFFF00}/givechips [id] [кол-во] !{FFFFFF}- админ: выдать/снять фишки');
+    player.outputChatBox('!{FFFF00}/hbuy !{FFFFFF}- купить ближайший свободный дом');
+    player.outputChatBox('!{FFFF00}/hsell !{FFFFFF}- продать свой дом рядом (возврат 80%)');
+    player.outputChatBox('!{FFFF00}/hlist !{FFFFFF}- список домов, /hinfo - ближайший дом, /myhouse - свои дома');
+    player.outputChatBox('!{FFFF00}/home !{FFFFFF}- телепорт к двери своего дома, /exit - выйти из дома');
+    player.outputChatBox('!{FFFF00}/hcreate [цена] [название] !{FFFFFF}- админ: создать дом в точке игрока');
+    player.outputChatBox('!{FFFF00}/hsetint [id] !{FFFFFF}- админ: встать в интерьер и сохранить его дому');
+    player.outputChatBox('!{FFFF00}/hint [id] [номер] /hints !{FFFFFF}- админ: готовый интерьер / список');
+    player.outputChatBox('!{FFFF00}/hdel [id] !{FFFFFF}- админ: удалить дом');
+    player.outputChatBox('!{FFFF00}/tpmark [название] !{FFFFFF}- админ: поставить маркер телепорта в точке игрока');
+    player.outputChatBox('!{FFFF00}/tptarget [название] !{FFFFFF}- админ: задать цель телепорта в точке игрока');
+    player.outputChatBox('!{FFFF00}/tplist /tpdel [id] !{FFFFFF}- список/удаление телепортов (админ)');
+    player.outputChatBox('!{FFFF00}/tpuse [id] !{FFFFFF}- использовать телепорт (или клавиша E у любого маркера)');
 });
 
 // /veh [имя] [номер] — заспавнить машину с произвольным номером и посадить игрока за руль
@@ -1299,6 +1318,24 @@ mp.events.addCommand('sbiv', (player, _, argId) => {
     }
 });
 
+// Сохранение биндов клавиш в БД (клиент шлёт при каждом изменении /bind,/unbind)
+mp.events.add('binds:save', (player, json) => {
+    if (!player || player.citizenId == null) return;
+    let binds = null;
+    try { binds = JSON.parse(json); } catch (e) { binds = null; }
+    if (!binds || typeof binds !== 'object' || Array.isArray(binds)) return;
+    charDb.saveBinds(player.citizenId, binds);
+});
+
+// Клиент запросил свои бинды (дублирующий канал к playerReady)
+mp.events.add('binds:request', (player) => {
+    if (!player || player.citizenId == null) return;
+    charDb.getBinds(player.citizenId, (binds) => {
+        if (!player || player.citizenId == null) return;
+        try { player.call('binds:load', [JSON.stringify(binds || {})]); } catch (e) { /* ignore */ }
+    });
+});
+
 // Выполнение привязанных команд (/bind) — клиент шлёт строку команды, здесь она
 // запускается через тот же обработчик, что и обычный ввод из чата.
 mp.events.add('bind:execute', (player, cmdText) => {
@@ -1979,6 +2016,12 @@ require('./cuff.js')({ getPlayerById, hasPerm, noPermMsg, api: cuffApi });
 
 // ---------- Казино: деньги, фишки, игровые автоматы ----------
 require('../casino/index.js')({ hasPerm, noPermMsg });
+
+// ---------- Дома: покупка / продажа ----------
+require('../houses/index.js')({ hasPerm, noPermMsg, getPlayerById });
+
+// ---------- Телепорт-маркеры ----------
+require('../teleports/index.js')({ hasPerm, noPermMsg });
 
 // ---------- РП-команды: /me /do /try /roll ----------
 require('../rp/index.js')();

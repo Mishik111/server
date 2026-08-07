@@ -130,6 +130,35 @@
             text-shadow: 0 0 12px rgba(241, 196, 15, 0.4);
         }
 
+        /* --- Wanted Level (Розыск) --- */
+        .wanted-card {
+            border-right-color: #ff4444;
+            gap: 12px;
+        }
+
+        .stat-icon.wanted {
+            background: rgba(255, 68, 68, 0.15);
+            border: 1px solid rgba(255, 68, 68, 0.3);
+            color: #ff5555;
+        }
+
+        .wanted-stars {
+            display: flex;
+            gap: 3px;
+        }
+
+        .wanted-stars .star {
+            font-size: 15px;
+            line-height: 1;
+            color: rgba(255, 255, 255, 0.15);
+            transition: color 0.2s ease, text-shadow 0.2s ease;
+        }
+
+        .wanted-stars .star.active {
+            color: #ff8800;
+            text-shadow: 0 0 10px rgba(255, 136, 0, 0.7);
+        }
+
         /* --- Bottom Right Speedometer --- */
         #speedo {
             position: fixed;
@@ -272,6 +301,19 @@
                 </div>
             </div>
         </div>
+
+        <!-- Wanted Level -->
+        <div class="hud-card wanted-card" id="wanted-card" style="display: none;">
+            <div class="stat-icon wanted">
+                <svg viewBox="0 0 24 24"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+            </div>
+            <div class="stat-info">
+                <span class="stat-label">Розыск</span>
+                <div class="wanted-stars" id="wanted-stars">
+                    <span class="star">★</span><span class="star">★</span><span class="star">★</span><span class="star">★</span><span class="star">★</span>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Bottom Right Speedometer -->
@@ -303,6 +345,14 @@
             if (d.id != null) document.getElementById('player-id').textContent = d.id;
             if (d.money != null) document.getElementById('money-val').textContent = '$ ' + fmt(d.money);
             if (d.chips != null) document.getElementById('chips-val').textContent = fmt(d.chips);
+
+            var w = Math.max(0, Math.min(5, Number(d.wanted || 0)));
+            var wcard = document.getElementById('wanted-card');
+            if (wcard) {
+                wcard.style.display = w > 0 ? 'flex' : 'none';
+                var stars = wcard.querySelectorAll('.wanted-stars .star');
+                for (var si = 0; si < stars.length; si++) stars[si].classList.toggle('active', si < w);
+            }
 
             var sp = document.getElementById('speedo');
             if (d.inVeh) {

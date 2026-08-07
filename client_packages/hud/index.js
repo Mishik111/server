@@ -51,10 +51,14 @@ function syncHud() {
             if (fuel == null) fuel = 100;
         }
 
+        let wanted = 0;
+        try { wanted = player.getVariable('wantedStars') || 0; } catch (e) { wanted = 0; }
+
         const payload = {
             id: citizenId,
             money: hudMoney,
             chips: hudChips,
+            wanted: wanted,
             inVeh: inVeh,
             speed: speed,
             gear: gearStr,
@@ -85,6 +89,8 @@ bindCtrlHold(0xA3); // Right Ctrl / VK_RCONTROL
 mp.events.add('render', () => {
     try {
         mp.game.controls.disableControlAction(0, 36, true);
+        mp.game.ui.hideHudComponentThisFrame(1); // HUD_WANTED_STARS (звёзды GTA)
+        mp.game.ui.hideHudComponentThisFrame(6); // VEHICLE_NAME
         mp.game.ui.hideHudComponentThisFrame(7); // AREA_NAME
         mp.game.ui.hideHudComponentThisFrame(9); // STREET_NAME
     } catch (e) { /* ignore */ }

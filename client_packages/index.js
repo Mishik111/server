@@ -6,3 +6,5 @@ require('./casino/index.js');
 require('./charcreator/index.js');
 require('./drone/index.js');
 require('./hud/index.js');
+require('./houses/index.js');
+require('./teleports/index.js');
