@@ -661,12 +661,15 @@ const activateTrafficEntity = (entity) => {
             return;
         }
         
-        // Водителя в машину сажаем принудительно на клиенте + запускаем езду
+        // Водителя в машину сажаем принудительно на клиенте + запускаем езду.
+        // Используем mp.game.invoke с хэшами натив (= надёжно в этой версии клиента),
+        // а не именованные обёртки mp.game.ped/mp.game.ai (могут отсутствовать).
         const findVehicle = (retries = 0) => {
             if (!entity || !entity.handle) return;
-            const veh = mp.vehicles.toArray().find(v => v.remoteId === vehId);
+            let veh = null;
+            try { veh = mp.vehicles.toArray().find(v => v.remoteId === vehId); } catch (e) {}
             if (!veh || !veh.handle) {
-                if (retries < 35) {
+                if (retries < 40) {
                     setTimeout(() => findVehicle(retries + 1), 150);
                 } else {
                     entity._trafficActivated = false; // Сбросим, чтобы можно было перезапустить при событии
@@ -680,14 +683,17 @@ const activateTrafficEntity = (entity) => {
             if (!entity || !entity.handle || !veh || !veh.handle) return;
             
             try {
-                mp.game.vehicle.setVehicleEngineOn(veh.handle, true, true, false);
-                mp.game.ped.setPedIntoVehicle(entity.handle, veh.handle, -1); // -1 = водительское сиденье
-                mp.game.ai.taskVehicleDriveWander(entity.handle, veh.handle, 18.0, 786603);
+                // SET_VEHICLE_ENGINE_ON
+                mp.game.invoke('0x2497C4717C8B881E', veh.handle, true, true, false);
+                // SET_PED_INTO_VEHICLE (телепорт водителя за руль, seat -1 = водитель)
+                mp.game.invoke('0xF75B0D629E1C063D', entity.handle, veh.handle, -1);
+                // TASK_VEHICLE_DRIVE_WANDER
+                mp.game.invoke('0x480142959D337D00', entity.handle, veh.handle, 18.0, 786603);
             } catch (e) {}
 
             let inVeh = false;
-            try { inVeh = mp.game.ped.isPedInVehicle(entity.handle, veh.handle, false); } catch (e) {}
-            if (!inVeh && attempt < 15) {
+            try { inVeh = mp.game.invoke('0xA3EE4A07279BB9DB', entity.handle, veh.handle, false); } catch (e) {}
+            if (!inVeh && attempt < 20) {
                 setTimeout(() => putInVehAndDrive(veh, attempt + 1), 150);
             }
         };
@@ -695,10 +701,10 @@ const activateTrafficEntity = (entity) => {
         findVehicle();
 
     } else if (trafficType === 'ped') {
-        // Запуск ходьбы для обычных пешеходов
+        // Запуск ходьбы для обычных пешеходов (TASK_WANDER_IN_AREA)
         try {
             const p = entity.position;
-            mp.game.ai.taskWanderInArea(entity.handle, p.x, p.y, p.z, 40.0, 1.0, 1.0);
+            mp.game.invoke('0xE054346CA3A0F315', entity.handle, p.x, p.y, p.z, 40.0, 1.0, 1.0);
         } catch (e) {}
     }
 };

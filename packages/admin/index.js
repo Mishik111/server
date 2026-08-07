@@ -1218,11 +1218,26 @@ const trafficSpawnVehicle = async (pos, dim) => {
 
         trafficSpawned.add(driver);
 
-        // Садим водителя в авто С ЗАДЕРЖКОЙ — сразу после создания не работает.
-        setTimeout(() => {
-            try { veh.engine = true; } catch (e) {}
-            try { driver.putIntoVehicle(veh, 0); } catch (e) {}
-        }, 250);
+        // Садим водителя в авто С ЗАДЕРЖКОЙ и с повторами — сразу после создания
+        // не работает, а однократная попытка может «промахнуться» мимо окна готовности
+        // сущностей. Сервер держит авторитет над посадкой, поэтому повторяем,
+        // пока пед не окажется в авто. Идемпотентно: повторная посадка безвредна.
+        let seatTries = 0;
+        const seatDriver = () => {
+            let seated = false;
+            try {
+                veh.engine = true;
+                driver.putIntoVehicle(veh, 0);
+                seated = true;
+            } catch (e) {}
+            try {
+                const occ = typeof veh.getOccupant === 'function' ? veh.getOccupant(0) : null;
+                if (occ === driver) return; // уже сидит
+            } catch (e) {}
+            seatTries++;
+            if (seatTries < 12) setTimeout(seatDriver, 250);
+        };
+        seatDriver();
     } catch (e) {}
 };
 
